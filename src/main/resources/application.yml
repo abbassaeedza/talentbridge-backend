@@ -1,0 +1,75 @@
+spring:
+  application:
+    name: talentbridge-backend
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:talentbridge}
+    username: ${DB_USERNAME:talentbridge}
+    password: ${DB_PASSWORD:talentbridge123}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 50MB
+      max-request-size: 100MB
+
+server:
+  port: ${SERVER_PORT:8080}
+  error:
+    include-message: always
+
+jwt:
+  secret: ${JWT_SECRET}
+  expiration-ms: ${JWT_EXPIRATION:86400000}
+  refresh-expiration-ms: ${JWT_REFRESH_EXPIRATION:604800000}
+
+openai:
+  api-key: ${OPENAI_API_KEY:your-openai-api-key}
+  base-url: https://api.openai.com/v1
+  chat-model: gpt-4o-mini
+  evaluation-model: gpt-4o
+  max-tokens: 2048
+  timeout-seconds: 120
+
+github:
+  api-url: https://api.github.com
+  oauth:
+    client-id: ${GITHUB_CLIENT_ID:your-github-client-id}
+    client-secret: ${GITHUB_CLIENT_SECRET:your-github-client-secret}
+    redirect-uri: ${GITHUB_REDIRECT_URI:http://localhost:3000/github/callback}
+
+storage:
+  local-path: ${LOCAL_STORAGE_PATH:./uploads}
+
+
+app:
+  seed:
+    coordinator:
+      email: ${APP_SEED_COORDINATOR_PASSWORD}
+      password: ${APP_SEED_COORDINATOR_PASSWORD}
+  frontend-url: ${FRONTEND_URL:http://localhost:3000}
+  from-email: ${FROM_EMAIL:noreply@talentbridge.com}
+  from-name: TalentBridge
+  party:
+    min-size: 2
+    max-size: 3
+  supervisor:
+    max-parties-per-semester: 2
+
+logging:
+  level:
+    com.talentbridge: DEBUG
+    org.springframework.security: WARN

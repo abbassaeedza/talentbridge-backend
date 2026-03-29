@@ -1,0 +1,111 @@
+package com.talentbridge.service;
+
+import com.talentbridge.dto.request.*;
+import com.talentbridge.dto.response.AuthResponse;
+import com.talentbridge.entity.*;
+import com.talentbridge.enums.*;
+import com.talentbridge.exception.*;
+import com.talentbridge.repository.*;
+import com.talentbridge.security.JwtTokenProvider;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+public class AuthService {
+    private final UserRepository userRepository;
+    private final CompanyProfileRepository companyProfileRepository;
+    private final ScorecardRepository scorecardRepository;
+    private final JwtTokenProvider tokenProvider;
+    private final PasswordEncoder passwordEncoder;
+    private final NotificationService notificationService;
+
+    @Transactional
+    public AuthResponse register(RegisterRequest req) {
+        if (userRepository.existsByEmail(req.getEmail()))
+            throw new BadRequestException("Email already registered");
+
+        User user = User.builder()
+                .email(req.getEmail().toLowerCase().trim())
+                .password(passwordEncoder.encode(req.getPassword()))
+                .firstName(req.getFirstName().trim())
+                .lastName(req.getLastName().trim())
+                .role(req.getRole())
+                .status(req.getRole() == UserRole.COORDINATOR ? UserStatus.APPROVED : UserStatus.PENDING)
+                .phoneNumber(req.getPhoneNumber())
+                .emailVerified(false)
+                .build();
+
+        user = userRepository.save(user);
+
+        if (req.getRole() == UserRole.COMPANY && req.getCompanyName() != null) {
+            companyProfileRepository.save(CompanyProfile.builder()
+                    .user(user).companyName(req.getCompanyName())
+                    .industry(req.getIndustry()).description(req.getCompanyDescription())
+                    .website(req.getWebsite()).registrationNumber(req.getRegistrationNumber())
+                    .build());
+        }
+
+        if (req.getRole() == UserRole.STUDENT) {
+            scorecardRepository.save(Scorecard.builder()
+                    .student(user).averageScore(0.0).totalProjects(0).build());
+        }
+
+        if (req.getRole() != UserRole.COORDINATOR)
+            notificationService.notifyCoordinatorsNewRegistration(user);
+
+        return buildAuthResponse(user);
+    }
+
+    public AuthResponse login(LoginRequest req) {
+        User user = userRepository.findByEmail(req.getEmail().toLowerCase().trim())
+                .orElseThrow(() -> new BadRequestException("Invalid email or password"));
+
+        if (!passwordEncoder.matches(req.getPassword(), user.getPassword()))
+            throw new BadRequestException("Invalid email or password");
+
+        // SUSPENDED still blocked — no token
+        if (user.getStatus() == UserStatus.SUSPENDED)
+            throw new ForbiddenException("Account suspended");
+
+        // PENDING and REJECTED now get a token so the frontend can redirect properly
+        return buildAuthResponse(user);
+    }
+
+    public AuthResponse refresh(RefreshTokenRequest req) {
+        if (!tokenProvider.validateToken(req.getRefreshToken()))
+            throw new BadRequestException("Invalid or expired refresh token");
+        UUID userId = tokenProvider.getUserIdFromToken(req.getRefreshToken());
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User", userId.toString()));
+        return buildAuthResponse(user);
+    }
+
+    @Transactional
+    public void changePassword(UUID userId, ChangePasswordRequest req) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User", userId.toString()));
+        if (!passwordEncoder.matches(req.getCurrentPassword(), user.getPassword()))
+            throw new BadRequestException("Current password is incorrect");
+        user.setPassword(passwordEncoder.encode(req.getNewPassword()));
+        userRepository.save(user);
+    }
+
+    private AuthResponse buildAuthResponse(User user) {
+        return AuthResponse.builder()
+                .accessToken(tokenProvider.generateAccessToken(
+                        user.getId(), user.getEmail(), user.getRole().name()))
+                .refreshToken(tokenProvider.generateRefreshToken(user.getId()))
+                .user(AuthResponse.UserDto.builder()
+                        .id(user.getId()).email(user.getEmail())
+                        .firstName(user.getFirstName()).lastName(user.getLastName())
+                        .role(user.getRole()).status(user.getStatus())
+                        .onboardingComplete(user.getRole() != UserRole.STUDENT || user.getStudentProfile() != null)
+                        .githubUsername(user.getGithubUsername())
+                        .build())
+                .build();
+    }
+}
