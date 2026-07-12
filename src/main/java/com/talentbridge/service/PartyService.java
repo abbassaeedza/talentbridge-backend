@@ -136,6 +136,7 @@ public class PartyService {
 
     @Transactional
     public PartyResponse assignSupervisor(UUID partyId, UUID supervisorId) {
+        if (supervisorId == null) throw new BadRequestException("Supervisor is required");
         Party party = getPartyOrThrow(partyId);
         User supervisor = getUser(supervisorId);
 
@@ -149,6 +150,77 @@ public class PartyService {
         if (total >= 4) throw new BadRequestException("Supervisor has reached max capacity (4 parties)");
 
         party.setSupervisor(supervisor);
+        return toResponse(partyRepository.save(party));
+    }
+
+    @Transactional
+    public PartyResponse renameParty(UUID partyId, String name) {
+        if (name == null || name.isBlank()) throw new BadRequestException("Party name is required");
+        Party party = getPartyOrThrow(partyId);
+        party.setName(name.trim());
+        return toResponse(partyRepository.save(party));
+    }
+
+    @Transactional
+    public PartyResponse removeMember(UUID partyId, UUID userId) {
+        Party party = getPartyOrThrow(partyId);
+        User member = getUser(userId);
+        boolean isMember = party.getMembers().stream().anyMatch(m -> m.getId().equals(userId));
+        if (!isMember) throw new BadRequestException("User is not a member of this party");
+
+        int nextSize = party.getMembers().size() - 1;
+        if (nextSize <= 0) throw new BadRequestException("Cannot remove the last party member");
+        if (party.getAssignedProject() != null && nextSize < appProperties.getParty().getMinSize()) {
+            throw new BadRequestException("Unassign the project before removing this member");
+        }
+
+        party.getMembers().removeIf(m -> m.getId().equals(userId));
+
+        if (party.getLeader().getId().equals(userId)) {
+            User nextLeader = party.getMembers().stream()
+                    .min(Comparator.comparing(User::getCreatedAt))
+                    .orElseThrow();
+            party.setLeader(nextLeader);
+            notificationService.send(nextLeader, NotificationType.GENERAL,
+                    "You are now the party leader",
+                    "You were made leader of " + party.getName() + " after a coordinator update.",
+                    partyId.toString(), "PARTY");
+        }
+
+        if (party.getAssignedProject() == null && party.getMembers().size() < appProperties.getParty().getMinSize()) {
+            party.setStatus(PartyStatus.FORMING);
+        }
+
+        notificationService.send(member, NotificationType.GENERAL,
+                "Removed from party",
+                "A coordinator removed you from " + party.getName() + ".",
+                partyId.toString(), "PARTY");
+
+        return toResponse(partyRepository.save(party));
+    }
+
+    @Transactional
+    public PartyResponse unassignProject(UUID partyId) {
+        Party party = getPartyOrThrow(partyId);
+        Project project = party.getAssignedProject();
+        if (project == null) throw new BadRequestException("Party does not have an assigned project");
+
+        applicationRepository.findByPartyIdAndProjectId(partyId, project.getId()).ifPresent(app -> {
+            app.setStatus(ApplicationStatus.PENDING);
+            applicationRepository.save(app);
+        });
+
+        project.setStatus(ProjectStatus.OPEN);
+        party.setAssignedProject(null);
+        party.setStatus(party.getMembers().size() >= appProperties.getParty().getMinSize()
+                ? PartyStatus.ACTIVE
+                : PartyStatus.FORMING);
+
+        projectRepository.save(project);
+        party.getMembers().forEach(m -> notificationService.send(m, NotificationType.GENERAL,
+                "Project unassigned",
+                "A coordinator unassigned " + project.getTitle() + " from your party.",
+                project.getId().toString(), "PROJECT"));
         return toResponse(partyRepository.save(party));
     }
 
@@ -213,6 +285,7 @@ public class PartyService {
                 .supervisorId(p.getSupervisor() != null ? p.getSupervisor().getId() : null)
                 .assignedProjectId(p.getAssignedProject() != null ? p.getAssignedProject().getId() : null)
                 .assignedProjectTitle(p.getAssignedProject() != null ? p.getAssignedProject().getTitle() : null)
+                .assignedProjectDeadline(p.getAssignedProject() != null ? p.getAssignedProject().getDeadline() : null)
                 .build();
     }
 

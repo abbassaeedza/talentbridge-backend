@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
 
   # ── PostgreSQL ────────────────────────────────────────────
@@ -23,6 +21,9 @@ services:
       start_period: 30s
 
   # ── Backend ───────────────────────────────────────────────
+  # Intentionally commented for local development: run Spring Boot with
+  # ./mvnw spring-boot:run while Compose provides PostgreSQL. Uncomment this
+  # block when you want the backend containerized as well.
 #  backend:
 #    build:
 #      context: .

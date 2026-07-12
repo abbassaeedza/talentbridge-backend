@@ -28,12 +28,12 @@ spring:
       max-request-size: 100MB
 
 server:
-  port: ${SERVER_PORT:8081}
+  port: ${SERVER_PORT:8080}
   error:
     include-message: always
 
 jwt:
-  secret: ${JWT_SECRET}
+  secret: ${JWT_SECRET:talentbridge-dev-secret-change-in-production-256-bits-minimum}
   expiration-ms: ${JWT_EXPIRATION:86400000}
   refresh-expiration-ms: ${JWT_REFRESH_EXPIRATION:604800000}
 
@@ -58,9 +58,8 @@ storage:
 
 app:
   seed:
-    coordinator:
-      email: ${APP_SEED_COORDINATOR_PASSWORD}
-      password: ${APP_SEED_COORDINATOR_PASSWORD}
+    coordinator-email: ${APP_SEED_COORDINATOR_EMAIL:coordinator@talentbridge.com}
+    coordinator-password: ${APP_SEED_COORDINATOR_PASSWORD:Admin1234!}
   frontend-url: ${FRONTEND_URL:http://localhost:3000}
   from-email: ${FROM_EMAIL:noreply@talentbridge.com}
   from-name: TalentBridge

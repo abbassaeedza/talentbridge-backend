@@ -24,6 +24,9 @@ public class Project extends BaseEntity {
     @Column(name = "internal_name")
     private String internalName;
 
+    @Column(name = "project_field", length = 100)
+    private String projectField;
+
     @Column(columnDefinition = "TEXT")
     private String description;
 

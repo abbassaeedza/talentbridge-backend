@@ -25,6 +25,9 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     // List — used by NotificationService.notifyCoordinatorsNewRegistration()
     List<User> findByRoleAndStatus(UserRole role, UserStatus status);
 
+    List<User> findByRole(UserRole role);
+    List<User> findByRoleIn(List<UserRole> roles);
+
     @Query("SELECT u FROM User u WHERE u.role = 'COORDINATOR' AND u.status = 'APPROVED'")
     List<User> findAllCoordinators();
 }

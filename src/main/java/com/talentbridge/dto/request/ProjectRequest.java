@@ -21,6 +21,7 @@ public class ProjectRequest {
     private List<String> tools;
     private LocalDateTime deadline;
     private UUID projectSupervisorId;
+    private String projectField;
 
     // Company-only internal reference name — not shown to students
     private String internalName;

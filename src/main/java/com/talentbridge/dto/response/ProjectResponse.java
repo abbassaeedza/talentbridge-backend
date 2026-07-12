@@ -24,7 +24,8 @@ public class ProjectResponse {
     private String projectSupervisorName;
     private UUID projectSupervisorId;
     private String createdByName;
-    private long applicantCount;
+    private long partyApplicationCount;
+    private String projectField;
     private LocalDateTime createdAt;
 
     // Only populated for the company that owns the project

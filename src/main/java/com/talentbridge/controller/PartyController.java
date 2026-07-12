@@ -11,6 +11,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -113,7 +114,31 @@ public class PartyController {
     @PreAuthorize("hasRole('COORDINATOR')")
     public ResponseEntity<PartyResponse> assignSupervisor(
             @PathVariable UUID partyId,
-            @RequestParam UUID supervisorId) {
-        return ResponseEntity.ok(partyService.assignSupervisor(partyId, supervisorId));
+            @RequestParam(required = false) UUID supervisorId,
+            @RequestBody(required = false) AssignSupervisorRequest req) {
+        UUID resolvedSupervisorId = supervisorId != null ? supervisorId : (req != null ? req.getSupervisorId() : null);
+        return ResponseEntity.ok(partyService.assignSupervisor(partyId, resolvedSupervisorId));
+    }
+
+    @PutMapping("/{partyId}/name")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public ResponseEntity<PartyResponse> rename(
+            @PathVariable UUID partyId,
+            @RequestBody Map<String, String> req) {
+        return ResponseEntity.ok(partyService.renameParty(partyId, req.get("name")));
+    }
+
+    @DeleteMapping("/{partyId}/members/{userId}")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public ResponseEntity<PartyResponse> removeMember(
+            @PathVariable UUID partyId,
+            @PathVariable UUID userId) {
+        return ResponseEntity.ok(partyService.removeMember(partyId, userId));
+    }
+
+    @DeleteMapping("/{partyId}/project")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public ResponseEntity<PartyResponse> unassignProject(@PathVariable UUID partyId) {
+        return ResponseEntity.ok(partyService.unassignProject(partyId));
     }
 }

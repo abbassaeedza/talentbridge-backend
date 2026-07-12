@@ -2,7 +2,9 @@ package com.talentbridge.controller;
 
 import com.talentbridge.dto.request.StudentOnboardingRequest;
 import com.talentbridge.dto.response.PageResponse;
+import com.talentbridge.dto.response.UserResponse;
 import com.talentbridge.entity.*;
+import com.talentbridge.enums.UserRole;
 import com.talentbridge.service.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -24,8 +26,8 @@ public class UserController {
     private final GitHubService gitHubService;
 
     @GetMapping("/me")
-    public ResponseEntity<User> getMe(@AuthenticationPrincipal UUID userId) {
-        return ResponseEntity.ok(userService.getById(userId));
+    public ResponseEntity<UserResponse> getMe(@AuthenticationPrincipal UUID userId) {
+        return ResponseEntity.ok(userService.toResponse(userService.getById(userId)));
     }
 
     @PostMapping("/onboarding")
@@ -49,7 +51,7 @@ public class UserController {
 
     @GetMapping("/pending")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<PageResponse<User>> getPending(
+    public ResponseEntity<PageResponse<UserResponse>> getPending(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
         return ResponseEntity.ok(userService.getPendingUsers(page, size));
@@ -57,7 +59,7 @@ public class UserController {
 
     @PutMapping("/{userId}/approve")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<User> approve(
+    public ResponseEntity<UserResponse> approve(
             @PathVariable UUID userId,
             @AuthenticationPrincipal UUID coordinatorId) {
         return ResponseEntity.ok(userService.approveUser(userId, coordinatorId));
@@ -65,7 +67,7 @@ public class UserController {
 
     @PutMapping("/{userId}/reject")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<User> reject(
+    public ResponseEntity<UserResponse> reject(
             @PathVariable UUID userId,
             @RequestParam(required = false) String reason,
             @AuthenticationPrincipal UUID coordinatorId) {
@@ -74,14 +76,51 @@ public class UserController {
 
     @PutMapping("/{userId}/suspend")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<User> suspend(@PathVariable UUID userId) {
+    public ResponseEntity<UserResponse> suspend(@PathVariable UUID userId) {
         return ResponseEntity.ok(userService.suspendUser(userId));
     }
 
     @PutMapping("/{userId}/unsuspend")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<User> unsuspend(@PathVariable UUID userId) {
+    public ResponseEntity<UserResponse> unsuspend(@PathVariable UUID userId) {
         return ResponseEntity.ok(userService.unsuspendUser(userId));
+    }
+
+    @GetMapping("/students")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public ResponseEntity<java.util.List<UserResponse>> getStudents() {
+        return ResponseEntity.ok(userService.getByRole(UserRole.STUDENT));
+    }
+
+    @GetMapping("/companies")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public ResponseEntity<java.util.List<UserResponse>> getCompanies() {
+        return ResponseEntity.ok(userService.getByRole(UserRole.COMPANY));
+    }
+
+    @GetMapping("/supervisors")
+    @PreAuthorize("hasAnyRole('COORDINATOR','STUDENT')")
+    public ResponseEntity<java.util.List<UserResponse>> getSupervisors() {
+        return ResponseEntity.ok(userService.getSupervisors());
+    }
+
+    @GetMapping("/coordinators")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public ResponseEntity<java.util.List<UserResponse>> getCoordinators() {
+        return ResponseEntity.ok(userService.getCoordinators());
+    }
+
+    @PostMapping("/broadcast")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public ResponseEntity<Void> broadcast(
+            @AuthenticationPrincipal UUID coordinatorId,
+            @RequestBody Map<String, String> req) {
+        UserRole role = null;
+        if (req.get("role") != null && !req.get("role").isBlank()) {
+            role = UserRole.valueOf(req.get("role"));
+        }
+        userService.broadcastNotification(coordinatorId, req.get("title"), req.get("message"), role);
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/github/callback")

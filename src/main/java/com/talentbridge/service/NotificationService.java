@@ -62,6 +62,12 @@ public class NotificationService {
                 project.getId().toString(), "PROJECT");
     }
 
+    public void notifyPartyProjectRetracted(Party party, Project project) {
+        String msg = "Project '" + project.getTitle() + "' was retracted by the coordinator.";
+        party.getMembers().forEach(m -> send(m, NotificationType.PROJECT_REJECTED,
+                "Project Retracted", msg, project.getId().toString(), "PROJECT"));
+    }
+
     public void notifyEvaluationComplete(Party party, EvaluationReport report) {
         String msg = "Evaluation complete. Total score: " +
                 String.format("%.1f", report.getTotalScore()) + "/100.";

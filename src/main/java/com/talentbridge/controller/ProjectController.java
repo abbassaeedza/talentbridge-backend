@@ -96,6 +96,13 @@ public class ProjectController {
         return ResponseEntity.ok(projectService.disapprove(id, coordinatorId));
     }
 
+    @PutMapping("/{id}/retract")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public ResponseEntity<ProjectResponse> retract(@PathVariable UUID id,
+                                                   @AuthenticationPrincipal UUID coordinatorId) {
+        return ResponseEntity.ok(projectService.retract(id, coordinatorId));
+    }
+
     @PutMapping("/{id}/deadline")
     @PreAuthorize("hasRole('COORDINATOR')")
     public ResponseEntity<ProjectResponse> setDeadline(

@@ -44,7 +44,11 @@ docker compose up postgres -d
 ./mvnw spring-boot:run
 ```
 
-Or with Docker Compose (full stack):
+By default, `docker-compose.yml` starts PostgreSQL only. The backend service is
+kept commented so local development can run Spring Boot directly with hot
+reload-friendly IDE tooling. Uncomment the backend service in
+`docker-compose.yml` if you want a containerized backend too:
+
 ```bash
 docker compose up --build
 ```

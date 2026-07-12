@@ -38,6 +38,7 @@ public class ProjectService {
                 .status(creator.getRole() == UserRole.COORDINATOR ? ProjectStatus.OPEN : ProjectStatus.PENDING_REVIEW)
                 .createdBy(creator).deadline(req.getDeadline())
                 .internalName(req.getInternalName())
+                .projectField(req.getProjectField())
                 .build();
 
         if (creator.getRole() == UserRole.COMPANY) project.setCompany(creator.getCompanyProfile());
@@ -67,6 +68,7 @@ public class ProjectService {
         if (req.getTools() != null) project.setTools(req.getTools());
         if (req.getDeadline() != null) project.setDeadline(req.getDeadline());
         if (req.getInternalName() != null) project.setInternalName(req.getInternalName());
+        project.setProjectField(req.getProjectField());
 
         // Resubmit for review if it was archived/rejected
         if (project.getStatus() == ProjectStatus.ARCHIVED) {
@@ -115,6 +117,26 @@ public class ProjectService {
 
         if (project.getStatus() != ProjectStatus.PENDING_REVIEW)
             throw new BadRequestException("Only pending projects can be disapproved");
+
+        project.setStatus(ProjectStatus.ARCHIVED);
+        return toResponse(projectRepository.save(project));
+    }
+
+    @Transactional
+    public ProjectResponse retract(UUID projectId, UUID coordinatorId) {
+        Project project = getOrThrow(projectId);
+        userRepository.findById(coordinatorId)
+                .orElseThrow(() -> new ResourceNotFoundException("User", coordinatorId.toString()));
+
+        if (project.getStatus() != ProjectStatus.OPEN)
+            throw new BadRequestException("Only open projects can be retracted");
+
+        applicationRepository.findByProjectIdAndStatus(projectId, ApplicationStatus.PENDING)
+                .forEach(a -> {
+                    a.setStatus(ApplicationStatus.REASSIGNED);
+                    applicationRepository.save(a);
+                    notificationService.notifyPartyProjectRetracted(a.getParty(), project);
+                });
 
         project.setStatus(ProjectStatus.ARCHIVED);
         return toResponse(projectRepository.save(project));
@@ -222,7 +244,8 @@ public class ProjectService {
                 .projectSupervisorName(p.getProjectSupervisor() != null ? p.getProjectSupervisor().getFullName() : null)
                 .projectSupervisorId(p.getProjectSupervisor() != null ? p.getProjectSupervisor().getId() : null)
                 .createdByName(p.getCreatedBy().getFullName())
-                .applicantCount(projectRepository.countApplicationsByProjectId(p.getId()))
+                .partyApplicationCount(projectRepository.countApplicationsByProjectId(p.getId()))
+                .projectField(p.getProjectField())
                 .createdAt(p.getCreatedAt())
                 .internalName(p.getInternalName())
                 .build();
