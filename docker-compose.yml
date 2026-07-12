@@ -23,33 +23,33 @@ services:
       start_period: 30s
 
   # ── Backend ───────────────────────────────────────────────
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: talentbridge-backend
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: talentbridge
-      DB_USERNAME: talentbridge
-      DB_PASSWORD: talentbridge123
-      JWT_SECRET: ${JWT_SECRET:-talentbridge-change-this-in-production-must-be-at-least-256-bits-long}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
-      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-      GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-http://localhost:3000/github/callback}
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
-      USE_LOCAL_STORAGE: "true"
-      LOCAL_STORAGE_PATH: /app/uploads
-    volumes:
-      - uploads_data:/app/uploads
-    depends_on:
-      postgres:
-        condition: service_healthy
+#  backend:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    container_name: talentbridge-backend
+#    restart: unless-stopped
+#    ports:
+#      - "8080:8080"
+#    environment:
+#      DB_HOST: postgres
+#      DB_PORT: 5432
+#      DB_NAME: talentbridge
+#      DB_USERNAME: talentbridge
+#      DB_PASSWORD: talentbridge123
+#      JWT_SECRET: ${JWT_SECRET:-talentbridge-change-this-in-production-must-be-at-least-256-bits-long}
+#      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+#      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+#      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+#      GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-http://localhost:3000/github/callback}
+#      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+#      USE_LOCAL_STORAGE: "true"
+#      LOCAL_STORAGE_PATH: /app/uploads
+#    volumes:
+#      - uploads_data:/app/uploads
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
 
 volumes:
   postgres_data:

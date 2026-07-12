@@ -21,7 +21,7 @@ public class Party extends BaseEntity {
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 50) private PartyStatus status;
     @Column(length = 50) private String semester;
     private Integer academicYear;
-    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "assigned_project_id") private Project assignedProject;
+    @OneToOne(fetch = FetchType.LAZY) @JoinColumn(name = "assigned_project_id") private Project assignedProject;
     @OneToMany(mappedBy = "party", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("rankPosition ASC")
     @Builder.Default private List<Application> applications = new ArrayList<>();
