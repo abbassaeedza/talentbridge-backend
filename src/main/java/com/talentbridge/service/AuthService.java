@@ -8,6 +8,7 @@ import com.talentbridge.exception.*;
 import com.talentbridge.repository.*;
 import com.talentbridge.security.JwtTokenProvider;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,6 +23,15 @@ public class AuthService {
     private final JwtTokenProvider tokenProvider;
     private final PasswordEncoder passwordEncoder;
     private final NotificationService notificationService;
+
+    @Value("${app.demo-mode:false}")
+    private boolean demoMode;
+
+    @Value("${app.seed.coordinator-email:coordinator@talentbridge.com}")
+    private String coordinatorEmail;
+
+    @Value("${app.seed.coordinator-password:Admin1234!}")
+    private String coordinatorPassword;
 
     @Transactional
     public AuthResponse register(RegisterRequest req) {
@@ -73,6 +83,15 @@ public class AuthService {
 
         // PENDING and REJECTED now get a token so the frontend can redirect properly
         return buildAuthResponse(user);
+    }
+
+    public AuthResponse demoLogin() {
+        if (!demoMode) throw new ResourceNotFoundException("Demo login is disabled");
+
+        LoginRequest request = new LoginRequest();
+        request.setEmail(coordinatorEmail);
+        request.setPassword(coordinatorPassword);
+        return login(request);
     }
 
     public AuthResponse refresh(RefreshTokenRequest req) {

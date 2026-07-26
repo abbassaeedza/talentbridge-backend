@@ -21,6 +21,10 @@ public class AuthController {
     public AuthResponse login(@Valid @RequestBody LoginRequest req) {
         return authService.login(req);
     }
+    @PostMapping("/demo-login")
+    public AuthResponse demoLogin() {
+        return authService.demoLogin();
+    }
     @PostMapping("/refresh")
     public AuthResponse refresh(@Valid @RequestBody RefreshTokenRequest req) {
         return authService.refresh(req);

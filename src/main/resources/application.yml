@@ -60,6 +60,7 @@ supabase:
 
 
 app:
+  demo-mode: ${APP_DEMO_MODE:false}
   seed:
     coordinator-email: ${APP_SEED_COORDINATOR_EMAIL:coordinator@talentbridge.com}
     coordinator-password: ${APP_SEED_COORDINATOR_PASSWORD:Admin1234!}

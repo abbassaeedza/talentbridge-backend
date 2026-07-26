@@ -25,10 +25,21 @@ public class DataSeeder {
     @Value("${app.seed.coordinator-password:Admin1234!}")
     private String coordinatorPassword;
 
+    @Value("${app.demo-mode:false}")
+    private boolean demoMode;
+
     @PostConstruct
     public void seed() {
-        if (userRepository.existsByEmail(coordinatorEmail)) {
-            log.info("Coordinator account already exists — skipping seed.");
+        var existingCoordinator = userRepository.findByEmail(coordinatorEmail);
+        if (existingCoordinator.isPresent()) {
+            User coordinator = existingCoordinator.get();
+            if (demoMode && !passwordEncoder.matches(coordinatorPassword, coordinator.getPassword())) {
+                coordinator.setPassword(passwordEncoder.encode(coordinatorPassword));
+                userRepository.save(coordinator);
+                log.info("Demo coordinator password synchronized.");
+            } else {
+                log.info("Coordinator account already exists - skipping seed.");
+            }
             return;
         }
 
