@@ -4,6 +4,7 @@ import com.resend.Resend;
 import com.resend.core.exception.ResendException;
 import com.resend.services.emails.model.CreateEmailOptions;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -14,6 +15,7 @@ public class EmailService {
     private final Resend resend;
     private final String fromEmail;
 
+    @Autowired
     public EmailService(@Value("${resend.api-key:}") String apiKey,
                         @Value("${resend.from-email:}") String fromEmail) {
         this(apiKey == null || apiKey.isBlank() ? null : new Resend(apiKey), fromEmail);
