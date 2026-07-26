@@ -25,5 +25,5 @@ public class EvaluationReport extends BaseEntity {
     @Builder.Default private List<StudentEvaluationScore> studentScores = new ArrayList<>();
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "triggered_by_id") private User triggeredBy;
     private LocalDateTime evaluatedAt;
-    @Column(nullable = false) private boolean finalized = false;
+    @Builder.Default @Column(nullable = false) private boolean finalized = false;
 }

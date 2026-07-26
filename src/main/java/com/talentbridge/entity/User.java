@@ -24,7 +24,7 @@ public class User extends BaseEntity {
     @JsonIgnore @Column(columnDefinition = "TEXT")         private String githubAccessToken;
     @Column(length = 100)                                  private String githubUsername;
     @Column(columnDefinition = "TEXT")                     private String rejectionReason;
-    @Column(nullable = false)                              private boolean emailVerified = false;
+    @Builder.Default @Column(nullable = false)             private boolean emailVerified = false;
     @JsonIgnore @Column(length = 255)                      private String emailVerificationToken;
 
     @OneToOne(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)

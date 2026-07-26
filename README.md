@@ -66,6 +66,10 @@ Flyway applies database migrations during startup.
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret |
 | `GITHUB_REDIRECT_URI` | Registered GitHub OAuth callback URL |
 | `LOCAL_STORAGE_PATH` | Directory used for uploaded submission files |
+| `DB_SSL_MODE` | PostgreSQL TLS mode, set to `require` for Supabase |
+| `SUPABASE_URL` | Supabase project URL enabling production object storage |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase service-role JWT |
+| `SUPABASE_STORAGE_BUCKET` | Public Storage bucket, defaults to `talentbridge-files` |
 | `SERVER_PORT` | HTTP port, defaults to `8080` |
 
 Development defaults exist for convenience.
@@ -79,6 +83,10 @@ Always override passwords, tokens, and seed credentials in a public deployment.
 ./mvnw clean package    # Build executable JAR
 docker build -t talentbridge-backend .
 ```
+
+## Deployment
+
+See [Render and Supabase deployment](docs/DEPLOYMENT.md) for the complete free-tier setup, required secrets, deployment order, and smoke checks.
 
 ## API groups
 

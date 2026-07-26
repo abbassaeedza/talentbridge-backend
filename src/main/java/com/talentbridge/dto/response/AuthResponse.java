@@ -7,7 +7,7 @@ import java.util.UUID;
 public class AuthResponse {
     private String accessToken;
     private String refreshToken;
-    private String tokenType = "Bearer";
+    @Builder.Default private String tokenType = "Bearer";
     private UserDto user;
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class UserDto {

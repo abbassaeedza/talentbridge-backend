@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.*;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.*;
 import java.time.LocalDateTime;
@@ -37,6 +38,10 @@ public class GlobalExceptionHandler {
     }
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiError> generic(Exception e) {
+        if (e instanceof ErrorResponse error) {
+            int status = error.getStatusCode().value();
+            return ResponseEntity.status(status).body(new ApiError(status, error.getBody().getDetail()));
+        }
         log.error("Unhandled exception", e);
         return ResponseEntity.status(500).body(new ApiError(500, "An unexpected error occurred"));
     }

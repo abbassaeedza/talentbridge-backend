@@ -23,7 +23,7 @@ public class Notification extends BaseEntity {
 
     @Column(nullable = false, length = 255) private String title;
     @Column(columnDefinition = "TEXT")      private String message;
-    @Column(nullable = false)               private boolean read = false;
+    @Builder.Default @Column(nullable = false) private boolean read = false;
     @Column(length = 255)                   private String referenceId;
     @Column(length = 100)                   private String referenceType;
 }
