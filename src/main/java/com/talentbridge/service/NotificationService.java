@@ -17,11 +17,13 @@ public class NotificationService {
 
     private final NotificationRepository notificationRepository;
     private final UserRepository userRepository;
+    private final EmailService emailService;
 
     @Transactional
     public void send(User recipient, NotificationType type, String title, String message) {
         notificationRepository.save(Notification.builder()
                 .recipient(recipient).type(type).title(title).message(message).read(false).build());
+        emailService.send(recipient.getEmail(), title, message);
     }
 
     @Transactional
@@ -30,6 +32,7 @@ public class NotificationService {
         notificationRepository.save(Notification.builder()
                 .recipient(recipient).type(type).title(title).message(message)
                 .referenceId(refId).referenceType(refType).read(false).build());
+        emailService.send(recipient.getEmail(), title, message);
     }
 
     public void notifyCoordinatorsNewRegistration(User newUser) {

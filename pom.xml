@@ -58,6 +58,13 @@
             <artifactId>jackson-datatype-hibernate6</artifactId>
         </dependency>
 
+        <!-- Transactional email -->
+        <dependency>
+            <groupId>com.resend</groupId>
+            <artifactId>resend-java</artifactId>
+            <version>4.13.0</version>
+        </dependency>
+
         <!-- JWT -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>

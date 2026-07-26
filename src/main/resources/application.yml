@@ -58,6 +58,9 @@ supabase:
   service-role-key: ${SUPABASE_SERVICE_ROLE_KEY:}
   storage-bucket: ${SUPABASE_STORAGE_BUCKET:talentbridge-files}
 
+resend:
+  api-key: ${RESEND_API_KEY:}
+  from-email: ${RESEND_FROM_EMAIL:}
 
 app:
   demo-mode: ${APP_DEMO_MODE:false}
