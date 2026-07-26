@@ -2,7 +2,6 @@ package com.talentbridge.controller;
 import com.talentbridge.entity.Submission;
 import com.talentbridge.service.SubmissionService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -16,30 +15,30 @@ public class SubmissionController {
 
     @PostMapping("/{partyId}/draft")
     @PreAuthorize("hasRole('STUDENT')")
-    public ResponseEntity<Submission> saveDraft(
+    public Submission saveDraft(
             @PathVariable UUID partyId, @AuthenticationPrincipal UUID leaderId,
             @RequestParam(required=false) String repoUrl,
             @RequestParam(required=false) String branch,
             @RequestParam(required=false) List<MultipartFile> documents,
             @RequestParam(required=false) String notes) {
-        return ResponseEntity.ok(submissionService.saveDraft(partyId, leaderId, repoUrl, branch, documents, notes));
+        return submissionService.saveDraft(partyId, leaderId, repoUrl, branch, documents, notes);
     }
 
     @PostMapping("/{partyId}/submit")
     @PreAuthorize("hasRole('STUDENT')")
-    public ResponseEntity<Submission> finalSubmit(@PathVariable UUID partyId,
-                                                   @AuthenticationPrincipal UUID leaderId) {
-        return ResponseEntity.ok(submissionService.finalSubmit(partyId, leaderId));
+    public Submission finalSubmit(@PathVariable UUID partyId,
+                                  @AuthenticationPrincipal UUID leaderId) {
+        return submissionService.finalSubmit(partyId, leaderId);
     }
 
     @GetMapping("/{partyId}")
-    public ResponseEntity<Submission> getByParty(@PathVariable UUID partyId) {
-        return ResponseEntity.ok(submissionService.getByPartyId(partyId));
+    public Submission getByParty(@PathVariable UUID partyId) {
+        return submissionService.getByPartyId(partyId);
     }
 
     @GetMapping("/project/{projectId}")
     @PreAuthorize("hasAnyRole('COORDINATOR','PROJECT_SUPERVISOR','PARTY_SUPERVISOR')")
-    public ResponseEntity<List<Submission>> getByProject(@PathVariable UUID projectId) {
-        return ResponseEntity.ok(submissionService.getByProjectId(projectId));
+    public List<Submission> getByProject(@PathVariable UUID projectId) {
+        return submissionService.getByProjectId(projectId);
     }
 }

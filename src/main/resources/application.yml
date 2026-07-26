@@ -61,13 +61,9 @@ app:
     coordinator-email: ${APP_SEED_COORDINATOR_EMAIL:coordinator@talentbridge.com}
     coordinator-password: ${APP_SEED_COORDINATOR_PASSWORD:Admin1234!}
   frontend-url: ${FRONTEND_URL:http://localhost:3000}
-  from-email: ${FROM_EMAIL:noreply@talentbridge.com}
-  from-name: TalentBridge
   party:
     min-size: 2
     max-size: 3
-  supervisor:
-    max-parties-per-semester: 2
 
 logging:
   level:

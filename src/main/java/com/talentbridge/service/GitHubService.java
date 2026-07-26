@@ -2,67 +2,76 @@ package com.talentbridge.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import okhttp3.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import java.util.*;
-import java.util.concurrent.TimeUnit;
+
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class GitHubService {
-    @Value("${github.api-url}")            private String apiUrl;
-    @Value("${github.oauth.client-id}")    private String clientId;
+    @Value("${github.api-url}") private String apiUrl;
+    @Value("${github.oauth.client-id}") private String clientId;
     @Value("${github.oauth.client-secret}") private String clientSecret;
 
-    private final ObjectMapper mapper = new ObjectMapper();
-
-    private OkHttpClient client() {
-        return new OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
+    private final ObjectMapper mapper;
+    private final HttpClient client = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(30))
             .build();
-    }
 
     public Map<String, String> exchangeCodeForToken(String code) {
         try {
-            String body = "client_id=" + clientId + "&client_secret=" + clientSecret + "&code=" + code;
-            RequestBody rb = RequestBody.create(body, MediaType.get("application/x-www-form-urlencoded"));
-            Request req = new Request.Builder()
-                .url("https://github.com/login/oauth/access_token")
-                .header("Accept", "application/json").post(rb).build();
-            try (Response resp = client().newCall(req).execute()) {
-                JsonNode json = mapper.readTree(resp.body().string());
-                Map<String, String> result = new HashMap<>();
-                result.put("access_token", json.path("access_token").asText());
-                return result;
-            }
+            String body = "client_id=" + encode(clientId) + "&client_secret=" + encode(clientSecret) + "&code=" + encode(code);
+            HttpRequest request = HttpRequest.newBuilder(URI.create("https://github.com/login/oauth/access_token"))
+                    .timeout(Duration.ofSeconds(60))
+                    .header("Accept", "application/json")
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+            JsonNode json = mapper.readTree(send(request));
+            return Map.of("access_token", json.path("access_token").asText());
         } catch (Exception e) {
             log.error("GitHub token exchange failed", e);
-            throw new RuntimeException("GitHub OAuth failed: " + e.getMessage());
+            throw new RuntimeException("GitHub OAuth failed: " + e.getMessage(), e);
         }
     }
 
     public String getGitHubUsername(String accessToken) {
         try {
-            JsonNode json = mapper.readTree(get(apiUrl + "/user", accessToken));
-            return json.get("login").asText();
-        } catch (Exception e) { log.error("Could not fetch GitHub username", e); return null; }
+            return mapper.readTree(get(apiUrl + "/user", accessToken)).path("login").asText();
+        } catch (Exception e) {
+            log.error("Could not fetch GitHub username", e);
+            return null;
+        }
     }
 
     public String fetchRepositoryContent(String repoUrl, String accessToken) {
         try {
             String[] parts = parseRepoUrl(repoUrl);
-            String owner = parts[0], repo = parts[1];
+            String owner = parts[0];
+            String repo = parts[1];
             StringBuilder content = new StringBuilder();
             content.append("=== README ===\n").append(fetchFile(owner, repo, "README.md", accessToken)).append("\n\n");
             content.append("=== TREE ===\n").append(fetchTree(owner, repo, accessToken)).append("\n\n");
             content.append("=== BUILD FILES ===\n");
-            for (String f : List.of("package.json","pom.xml","build.gradle","requirements.txt","Dockerfile")) {
-                String fc = fetchFile(owner, repo, f, accessToken);
-                if (!fc.isBlank()) content.append("--- ").append(f).append(" ---\n")
-                    .append(fc, 0, Math.min(fc.length(), 1500)).append("\n\n");
+            for (String file : List.of("package.json", "pom.xml", "build.gradle", "requirements.txt", "Dockerfile")) {
+                String fileContent = fetchFile(owner, repo, file, accessToken);
+                if (!fileContent.isBlank()) content.append("--- ").append(file).append(" ---\n")
+                        .append(fileContent, 0, Math.min(fileContent.length(), 1500)).append("\n\n");
             }
             return content.toString();
         } catch (Exception e) {
@@ -71,27 +80,26 @@ public class GitHubService {
         }
     }
 
-    public List<String> fetchContributorStats(String repoUrl, String accessToken) {
+    public ContributorData fetchContributorData(String repoUrl, String accessToken) {
         try {
             String[] parts = parseRepoUrl(repoUrl);
-            JsonNode contributors = mapper.readTree(get(apiUrl + "/repos/" + parts[0] + "/" + parts[1] + "/contributors", accessToken));
+            JsonNode contributors = mapper.readTree(get(
+                    apiUrl + "/repos/" + parts[0] + "/" + parts[1] + "/contributors", accessToken));
             List<String> stats = new ArrayList<>();
-            contributors.forEach(c -> stats.add("Contributor: " + c.get("login").asText() + " | Commits: " + c.get("contributions").asInt()));
-            return stats;
+            Map<String, Integer> commitCounts = new LinkedHashMap<>();
+            contributors.forEach(contributor -> {
+                String login = contributor.path("login").asText();
+                int commits = contributor.path("contributions").asInt();
+                stats.add("Contributor: " + login + " | Commits: " + commits);
+                commitCounts.put(login, commits);
+            });
+            return new ContributorData(stats, commitCounts);
         } catch (Exception e) {
-            log.error("Failed to fetch contributor stats", e);
-            return List.of("Could not fetch contributor stats: " + e.getMessage());
+            log.error("Failed to fetch contributor data", e);
+            return new ContributorData(
+                    List.of("Could not fetch contributor stats: " + e.getMessage()),
+                    Map.of());
         }
-    }
-
-    public Map<String, Integer> fetchCommitCountPerAuthor(String repoUrl, String accessToken) {
-        try {
-            String[] parts = parseRepoUrl(repoUrl);
-            JsonNode contributors = mapper.readTree(get(apiUrl + "/repos/" + parts[0] + "/" + parts[1] + "/contributors", accessToken));
-            Map<String, Integer> map = new LinkedHashMap<>();
-            contributors.forEach(c -> map.put(c.get("login").asText(), c.get("contributions").asInt()));
-            return map;
-        } catch (Exception e) { log.error("Failed to fetch commit counts", e); return Map.of(); }
     }
 
     private String fetchFile(String owner, String repo, String path, String token) {
@@ -99,32 +107,41 @@ public class GitHubService {
             JsonNode node = mapper.readTree(get(apiUrl + "/repos/" + owner + "/" + repo + "/contents/" + path, token));
             if (node.has("content")) {
                 byte[] decoded = Base64.getDecoder().decode(node.get("content").asText().replaceAll("\\s", ""));
-                return new String(decoded);
+                return new String(decoded, StandardCharsets.UTF_8);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
         return "";
     }
 
     private String fetchTree(String owner, String repo, String token) {
         try {
             JsonNode tree = mapper.readTree(get(apiUrl + "/repos/" + owner + "/" + repo + "/git/trees/HEAD?recursive=1", token));
-            StringBuilder sb = new StringBuilder();
-            if (tree.has("tree")) tree.get("tree").forEach(item -> {
-                if ("blob".equals(item.get("type").asText())) sb.append(item.get("path").asText()).append("\n");
+            StringBuilder result = new StringBuilder();
+            tree.path("tree").forEach(item -> {
+                if ("blob".equals(item.path("type").asText())) result.append(item.path("path").asText()).append('\n');
             });
-            return sb.toString();
-        } catch (Exception e) { return "Could not fetch tree: " + e.getMessage(); }
+            return result.toString();
+        } catch (Exception e) {
+            return "Could not fetch tree: " + e.getMessage();
+        }
     }
 
     private String get(String url, String token) throws Exception {
-        Request.Builder rb = new Request.Builder().url(url)
-            .header("Accept", "application/vnd.github.v3+json")
-            .header("User-Agent", "TalentBridge/1.0");
-        if (token != null && !token.isBlank()) rb.header("Authorization", "token " + token);
-        try (Response resp = client().newCall(rb.get().build()).execute()) {
-            if (!resp.isSuccessful()) throw new RuntimeException("GitHub API " + resp.code() + " for " + url);
-            return resp.body().string();
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(60))
+                .header("Accept", "application/vnd.github.v3+json")
+                .header("User-Agent", "TalentBridge/1.0");
+        if (token != null && !token.isBlank()) request.header("Authorization", "Bearer " + token);
+        return send(request.GET().build());
+    }
+
+    private String send(HttpRequest request) throws Exception {
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new RuntimeException("GitHub API " + response.statusCode() + " for " + request.uri());
         }
+        return response.body();
     }
 
     private String[] parseRepoUrl(String repoUrl) {
@@ -132,5 +149,12 @@ public class GitHubService {
         String[] parts = clean.split("/");
         if (parts.length < 2) throw new IllegalArgumentException("Invalid GitHub URL: " + repoUrl);
         return new String[]{parts[0], parts[1]};
+    }
+
+    private String encode(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    public record ContributorData(List<String> stats, Map<String, Integer> commitCounts) {
     }
 }

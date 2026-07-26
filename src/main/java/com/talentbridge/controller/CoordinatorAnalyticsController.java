@@ -3,7 +3,6 @@ package com.talentbridge.controller;
 import com.talentbridge.dto.response.CoordinatorAnalyticsResponse;
 import com.talentbridge.service.CoordinatorAnalyticsService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
@@ -15,7 +14,7 @@ public class CoordinatorAnalyticsController {
 
     @GetMapping
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<CoordinatorAnalyticsResponse> getAnalytics() {
-        return ResponseEntity.ok(analyticsService.getAnalytics());
+    public CoordinatorAnalyticsResponse getAnalytics() {
+        return analyticsService.getAnalytics();
     }
 }

@@ -18,12 +18,12 @@ public class AuthController {
         return ResponseEntity.status(HttpStatus.CREATED).body(authService.register(req));
     }
     @PostMapping("/login")
-    public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest req) {
-        return ResponseEntity.ok(authService.login(req));
+    public AuthResponse login(@Valid @RequestBody LoginRequest req) {
+        return authService.login(req);
     }
     @PostMapping("/refresh")
-    public ResponseEntity<AuthResponse> refresh(@Valid @RequestBody RefreshTokenRequest req) {
-        return ResponseEntity.ok(authService.refresh(req));
+    public AuthResponse refresh(@Valid @RequestBody RefreshTokenRequest req) {
+        return authService.refresh(req);
     }
     @PutMapping("/password")
     public ResponseEntity<Void> changePassword(@AuthenticationPrincipal UUID userId,

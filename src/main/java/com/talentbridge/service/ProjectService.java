@@ -220,11 +220,6 @@ public class ProjectService {
                 .stream().map(this::toResponse).collect(Collectors.toList());
     }
 
-    public List<ProjectResponse> getByCompany(UUID companyId) {
-        return projectRepository.findByCompanyId(companyId)
-                .stream().map(this::toResponse).collect(Collectors.toList());
-    }
-
     public ProjectResponse getById(UUID id) { return toResponse(getOrThrow(id)); }
 
     private Project getOrThrow(UUID id) {

@@ -20,7 +20,6 @@ import java.util.UUID;
 public class PartyController {
     private final PartyService partyService;
 
-    // create() ✓
     @PostMapping
     @PreAuthorize("hasRole('STUDENT')")
     public ResponseEntity<PartyResponse> create(
@@ -29,16 +28,14 @@ public class PartyController {
         return ResponseEntity.status(HttpStatus.CREATED).body(partyService.create(userId, req));
     }
 
-    // join() ✓
     @PostMapping("/{partyId}/join")
     @PreAuthorize("hasRole('STUDENT')")
-    public ResponseEntity<PartyResponse> join(
+    public PartyResponse join(
             @PathVariable UUID partyId,
             @AuthenticationPrincipal UUID userId) {
-        return ResponseEntity.ok(partyService.join(partyId, userId));
+        return partyService.join(partyId, userId);
     }
 
-    // leave() — void in service, returns 204
     @DeleteMapping("/{partyId}/leave")
     @PreAuthorize("hasRole('STUDENT')")
     public ResponseEntity<Void> leave(
@@ -48,34 +45,29 @@ public class PartyController {
         return ResponseEntity.noContent().build();
     }
 
-    // getMyParty() ✓
     @GetMapping("/my")
     @PreAuthorize("hasRole('STUDENT')")
-    public ResponseEntity<PartyResponse> getMyParty(@AuthenticationPrincipal UUID userId) {
-        return ResponseEntity.ok(partyService.getMyParty(userId));
+    public PartyResponse getMyParty(@AuthenticationPrincipal UUID userId) {
+        return partyService.getMyParty(userId);
     }
 
-    // getById() ✓
     @GetMapping("/{partyId}")
-    public ResponseEntity<PartyResponse> getById(@PathVariable UUID partyId) {
-        return ResponseEntity.ok(partyService.getById(partyId));
+    public PartyResponse getById(@PathVariable UUID partyId) {
+        return partyService.getById(partyId);
     }
 
-    // getAll() ✓
     @GetMapping("/all")
     @PreAuthorize("hasAnyRole('COORDINATOR','PARTY_SUPERVISOR','PROJECT_SUPERVISOR')")
-    public ResponseEntity<List<PartyResponse>> getAll() {
-        return ResponseEntity.ok(partyService.getAll());
+    public List<PartyResponse> getAll() {
+        return partyService.getAll();
     }
 
-    // getSupervised() ✓
     @GetMapping("/supervised")
     @PreAuthorize("hasAnyRole('PARTY_SUPERVISOR','PROJECT_SUPERVISOR')")
-    public ResponseEntity<List<PartyResponse>> getSupervised(@AuthenticationPrincipal UUID userId) {
-        return ResponseEntity.ok(partyService.getSupervised(userId));
+    public List<PartyResponse> getSupervised(@AuthenticationPrincipal UUID userId) {
+        return partyService.getSupervised(userId);
     }
 
-    // applyToProject() ✓
     @PostMapping("/{partyId}/apply")
     @PreAuthorize("hasRole('STUDENT')")
     public ResponseEntity<ApplicationResponse> apply(
@@ -86,59 +78,55 @@ public class PartyController {
                 .body(partyService.applyToProject(partyId, leaderId, req));
     }
 
-    // getApplicationsByParty() ✓
     @GetMapping("/{partyId}/applications")
-    public ResponseEntity<List<ApplicationResponse>> getApplications(@PathVariable UUID partyId) {
-        return ResponseEntity.ok(partyService.getApplicationsByParty(partyId));
+    public List<ApplicationResponse> getApplications(@PathVariable UUID partyId) {
+        return partyService.getApplicationsByParty(partyId);
     }
 
-    // getApplicationsByProject() ✓
     @GetMapping("/projects/{projectId}/applications")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<List<ApplicationResponse>> getApplicationsByProject(@PathVariable UUID projectId) {
-        return ResponseEntity.ok(partyService.getApplicationsByProject(projectId));
+    public List<ApplicationResponse> getApplicationsByProject(@PathVariable UUID projectId) {
+        return partyService.getApplicationsByProject(projectId);
     }
 
-    // changeLeader() ✓
     @PutMapping("/{partyId}/leader")
     @PreAuthorize("hasRole('STUDENT')")
-    public ResponseEntity<PartyResponse> changeLeader(
+    public PartyResponse changeLeader(
             @PathVariable UUID partyId,
             @AuthenticationPrincipal UUID currentLeaderId,
             @RequestParam UUID newLeaderId) {
-        return ResponseEntity.ok(partyService.changeLeader(partyId, currentLeaderId, newLeaderId));
+        return partyService.changeLeader(partyId, currentLeaderId, newLeaderId);
     }
 
-    // assignSupervisor() ✓
     @PutMapping("/{partyId}/supervisor")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<PartyResponse> assignSupervisor(
+    public PartyResponse assignSupervisor(
             @PathVariable UUID partyId,
             @RequestParam(required = false) UUID supervisorId,
             @RequestBody(required = false) AssignSupervisorRequest req) {
         UUID resolvedSupervisorId = supervisorId != null ? supervisorId : (req != null ? req.getSupervisorId() : null);
-        return ResponseEntity.ok(partyService.assignSupervisor(partyId, resolvedSupervisorId));
+        return partyService.assignSupervisor(partyId, resolvedSupervisorId);
     }
 
     @PutMapping("/{partyId}/name")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<PartyResponse> rename(
+    public PartyResponse rename(
             @PathVariable UUID partyId,
             @RequestBody Map<String, String> req) {
-        return ResponseEntity.ok(partyService.renameParty(partyId, req.get("name")));
+        return partyService.renameParty(partyId, req.get("name"));
     }
 
     @DeleteMapping("/{partyId}/members/{userId}")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<PartyResponse> removeMember(
+    public PartyResponse removeMember(
             @PathVariable UUID partyId,
             @PathVariable UUID userId) {
-        return ResponseEntity.ok(partyService.removeMember(partyId, userId));
+        return partyService.removeMember(partyId, userId);
     }
 
     @DeleteMapping("/{partyId}/project")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<PartyResponse> unassignProject(@PathVariable UUID partyId) {
-        return ResponseEntity.ok(partyService.unassignProject(partyId));
+    public PartyResponse unassignProject(@PathVariable UUID partyId) {
+        return partyService.unassignProject(partyId);
     }
 }

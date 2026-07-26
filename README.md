@@ -1,192 +1,107 @@
 # TalentBridge Backend
 
-Spring Boot REST API for TalentBridge — an AI-powered platform that helps companies shortlist skilled student talent through industry-driven projects.
+TalentBridge is an AI-assisted platform connecting university student teams with industry projects.
+This repository contains its Spring Boot REST API.
 
----
+## Features
 
-## Tech Stack
+- JWT authentication with refresh tokens and role-based authorization
+- Student, company, coordinator, and supervisor workflows
+- Project, party, application, submission, evaluation, scorecard, and notification management
+- PostgreSQL schema migrations with Flyway
+- GitHub repository analysis
+- OpenAI-powered chat and project evaluation
+- Multipart submission uploads
 
-| Concern | Technology |
-|---|---|
-| Framework | Spring Boot 3.2 (Java 17) |
-| Security | Spring Security + JWT |
-| Database | PostgreSQL 15 |
-| Migrations | Flyway |
-| AI Chatbot | OpenAI GPT-4o-mini |
-| AI Evaluation | OpenAI GPT-4o |
-| Repo Analysis | GitHub REST API v3 |
-| File Storage | Local filesystem (S3-ready) |
-| Email | SendGrid / SMTP |
-| Containerisation | Docker + Docker Compose |
+## Technology
 
----
+- Java 17
+- Spring Boot 3.2
+- Spring Security
+- Spring Data JPA
+- PostgreSQL 15
+- Flyway
+- Maven Wrapper
+- Docker
 
-## Quick Start
+## Requirements
 
-### 1. Prerequisites
-- Java 17+
-- Maven 3.9+
-- Docker & Docker Compose
+- Java 17 or newer
+- Docker with Docker Compose
 
-### 2. Configure environment
+## Local development
+
+Start PostgreSQL:
+
+```bash
+docker compose up -d postgres
+```
+
+Copy the example configuration, add required credentials, then start Spring Boot:
+
 ```bash
 cp .env.example .env
-# Edit .env — fill in OPENAI_API_KEY, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET at minimum
-```
-
-### 3. Start PostgreSQL
-```bash
-docker compose up postgres -d
-```
-
-### 4. Run the backend
-```bash
 ./mvnw spring-boot:run
 ```
 
-By default, `docker-compose.yml` starts PostgreSQL only. The backend service is
-kept commented so local development can run Spring Boot directly with hot
-reload-friendly IDE tooling. Uncomment the backend service in
-`docker-compose.yml` if you want a containerized backend too:
+Environment files are not loaded automatically by Spring Boot.
+Export their values through your shell or IDE before starting the application.
+
+The API runs at `http://localhost:8080` by default.
+Flyway applies database migrations during startup.
+
+## Required environment variables
+
+| Variable | Description |
+| --- | --- |
+| `DB_HOST` | PostgreSQL host |
+| `DB_PORT` | PostgreSQL port |
+| `DB_NAME` | PostgreSQL database |
+| `DB_USERNAME` | PostgreSQL user |
+| `DB_PASSWORD` | PostgreSQL password |
+| `JWT_SECRET` | Random JWT signing secret of at least 32 bytes |
+| `FRONTEND_URL` | Exact frontend origin allowed by CORS |
+| `OPENAI_API_KEY` | OpenAI API key used by chat and evaluation |
+| `GITHUB_CLIENT_ID` | GitHub OAuth App client ID |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret |
+| `GITHUB_REDIRECT_URI` | Registered GitHub OAuth callback URL |
+| `LOCAL_STORAGE_PATH` | Directory used for uploaded submission files |
+| `SERVER_PORT` | HTTP port, defaults to `8080` |
+
+Development defaults exist for convenience.
+Always override passwords, tokens, and seed credentials in a public deployment.
+
+## Commands
 
 ```bash
-docker compose up --build
+./mvnw spring-boot:run  # Start API
+./mvnw test             # Run tests
+./mvnw clean package    # Build executable JAR
+docker build -t talentbridge-backend .
 ```
 
-The API will be available at **http://localhost:8080**
+## API groups
 
----
+| Prefix | Purpose |
+| --- | --- |
+| `/api/auth` | Registration, login, refresh, and password management |
+| `/api/users` | Profiles, approvals, GitHub linking, and notifications |
+| `/api/projects` | Project creation, discovery, approval, and assignment |
+| `/api/parties` | Team membership, applications, and supervision |
+| `/api/submissions` | Draft and final project submissions |
+| `/api/evaluations` | AI evaluation and report finalization |
+| `/api/chat` | AI assistant |
+| `/api/analytics` | Coordinator analytics |
 
-## Default Credentials
+## Database migrations
 
-| Role | Email | Password |
-|---|---|---|
-| Coordinator | coordinator@talentbridge.com | Admin1234! |
+Migration scripts live in `src/main/resources/db/migration`.
+Add a new versioned migration instead of changing a migration already applied to a shared database.
 
----
+## Frontend
 
-## API Reference
+Frontend source lives in the separate [`talentbridge-frontend`](https://github.com/abbassaeedza/talentbridge-frontend) repository.
 
-### Auth
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/api/auth/register` | Register any role |
-| POST | `/api/auth/login` | Login |
-| POST | `/api/auth/refresh` | Refresh access token |
-| PUT | `/api/auth/password` | Change password |
+## License
 
-### Users
-| Method | Endpoint | Role | Description |
-|---|---|---|---|
-| GET | `/api/users/me` | Any | Get current user |
-| POST | `/api/users/onboarding` | STUDENT | Complete profile |
-| GET | `/api/users/pending` | COORDINATOR | Pending registrations |
-| PUT | `/api/users/{id}/approve` | COORDINATOR | Approve user |
-| PUT | `/api/users/{id}/reject` | COORDINATOR | Reject user |
-| POST | `/api/users/github/callback` | STUDENT | Link GitHub |
-| GET | `/api/users/notifications` | Any | Get notifications |
-| GET | `/api/users/my/scorecard` | STUDENT | My scorecard |
-
-### Projects
-| Method | Endpoint | Role | Description |
-|---|---|---|---|
-| POST | `/api/projects` | COMPANY, COORDINATOR | Create project |
-| GET | `/api/projects` | Any | Browse open projects |
-| GET | `/api/projects/all` | COORDINATOR | All projects |
-| GET | `/api/projects/{id}` | Any | Project detail |
-| PUT | `/api/projects/{id}/approve` | COORDINATOR | Approve project |
-| PUT | `/api/projects/{id}/deadline` | COORDINATOR | Set deadline |
-| PUT | `/api/projects/global-deadline` | COORDINATOR | Set global deadline |
-| PUT | `/api/projects/{id}/assign/{partyId}` | COORDINATOR | Assign to party |
-
-### Parties
-| Method | Endpoint | Role | Description |
-|---|---|---|---|
-| POST | `/api/parties` | STUDENT | Create party |
-| POST | `/api/parties/{id}/join` | STUDENT | Join party |
-| DELETE | `/api/parties/{id}/leave` | STUDENT | Leave party |
-| POST | `/api/parties/{id}/apply` | STUDENT | Apply to project |
-| GET | `/api/parties/my` | STUDENT | My party |
-| GET | `/api/parties/all` | COORDINATOR | All parties |
-| GET | `/api/parties/supervised` | SUPERVISOR | Supervised parties |
-| PUT | `/api/parties/{id}/supervisor` | COORDINATOR | Assign supervisor |
-
-### Submissions
-| Method | Endpoint | Role | Description |
-|---|---|---|---|
-| POST | `/api/submissions/{partyId}/draft` | STUDENT | Save draft |
-| POST | `/api/submissions/{partyId}/submit` | STUDENT | Final submit |
-| GET | `/api/submissions/{partyId}` | Any | Get submission |
-
-### Evaluations
-| Method | Endpoint | Role | Description |
-|---|---|---|---|
-| POST | `/api/evaluations/trigger/{submissionId}` | COORDINATOR | Trigger AI evaluation |
-| PUT | `/api/evaluations/{reportId}/finalize` | COORDINATOR | Finalize report |
-| GET | `/api/evaluations/submission/{id}` | Any | Get report |
-
-### AI Chat
-| Method | Endpoint | Role | Description |
-|---|---|---|---|
-| POST | `/api/chat` | Any | Chat with AI assistant |
-
----
-
-## Project Structure
-
-```
-src/main/java/com/talentbridge/
-├── TalentBridgeApplication.java
-├── config/
-│   ├── SecurityConfig.java
-│   └── AppProperties.java
-├── controller/         # REST endpoints
-├── dto/
-│   ├── request/        # Request bodies
-│   └── response/       # Response shapes
-├── entity/             # JPA entities
-├── enums/              # Domain enums
-├── exception/          # Custom exceptions + global handler
-├── repository/         # Spring Data JPA repositories
-├── security/           # JWT provider + filter
-└── service/            # Business logic
-    ├── AuthService.java
-    ├── UserService.java
-    ├── ProjectService.java
-    ├── PartyService.java
-    ├── SubmissionService.java
-    ├── EvaluationService.java
-    ├── OpenAIService.java
-    ├── GitHubService.java
-    ├── ScorecardService.java
-    ├── NotificationService.java
-    └── FileStorageService.java
-```
-
----
-
-## User Roles
-
-| Role | Description |
-|---|---|
-| `STUDENT` | Creates/joins party, browses & applies to projects, submits work |
-| `COMPANY` | Posts industry projects, assigns project supervisors |
-| `PARTY_SUPERVISOR` | University professor; monitors party progress (max 2/semester) |
-| `PROJECT_SUPERVISOR` | Company mentor; views party progress on their project |
-| `COORDINATOR` | Admin; approves users, assigns projects, triggers evaluations |
-
----
-
-## AI Evaluation Dimensions
-
-When the coordinator triggers evaluation, GPT-4o analyses the submitted GitHub repo:
-
-| Dimension | Weight | Description |
-|---|---|---|
-| AI Detection | 20% | Likelihood code is human-written |
-| Code Quality | 25% | SOLID principles, naming, structure, tests |
-| Functionality | 25% | Does the app actually work? |
-| Scope Alignment | 20% | Does it match the deliverables? |
-| Team Collaboration | 10% | Commit distribution across members |
-
-Individual student scores are then calculated based on their commit contribution percentage.
+Licensed under the [MIT License](LICENSE).

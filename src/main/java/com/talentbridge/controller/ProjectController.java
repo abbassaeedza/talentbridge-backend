@@ -29,49 +29,49 @@ public class ProjectController {
     }
 
     @GetMapping
-    public ResponseEntity<PageResponse<ProjectResponse>> getOpen(
+    public PageResponse<ProjectResponse> getOpen(
             @RequestParam(required = false) String search,
             @RequestParam(defaultValue = "createdAt") String sortBy,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "12") int size) {
-        return ResponseEntity.ok(projectService.getOpen(search, sortBy, page, size));
+        return projectService.getOpen(search, sortBy, page, size);
     }
 
     @GetMapping("/all")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<PageResponse<ProjectResponse>> getAll(
+    public PageResponse<ProjectResponse> getAll(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String status) {
-        return ResponseEntity.ok(projectService.getAll(page, size, status));
+        return projectService.getAll(page, size, status);
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<ProjectResponse> getById(@PathVariable UUID id) {
-        return ResponseEntity.ok(projectService.getById(id));
+    public ProjectResponse getById(@PathVariable UUID id) {
+        return projectService.getById(id);
     }
 
     @GetMapping("/my")
     @PreAuthorize("hasRole('COMPANY')")
-    public ResponseEntity<List<ProjectResponse>> getMyProjects(@AuthenticationPrincipal UUID userId) {
-        return ResponseEntity.ok(projectService.getByCreator(userId));
+    public List<ProjectResponse> getMyProjects(@AuthenticationPrincipal UUID userId) {
+        return projectService.getByCreator(userId);
     }
 
     @PutMapping("/{id}")
     @PreAuthorize("hasRole('COMPANY')")
-    public ResponseEntity<ProjectResponse> update(@PathVariable UUID id,
-                                                  @AuthenticationPrincipal UUID userId,
-                                                  @Valid @RequestBody ProjectRequest req) {
-        return ResponseEntity.ok(projectService.update(id, userId, req));
+    public ProjectResponse update(@PathVariable UUID id,
+                                  @AuthenticationPrincipal UUID userId,
+                                  @Valid @RequestBody ProjectRequest req) {
+        return projectService.update(id, userId, req);
     }
 
     @PatchMapping("/{id}/internal-name")
     @PreAuthorize("hasRole('COMPANY')")
-    public ResponseEntity<ProjectResponse> patchInternalName(
+    public ProjectResponse patchInternalName(
             @PathVariable UUID id,
             @AuthenticationPrincipal UUID userId,
             @RequestParam(required = false) String name) {
-        return ResponseEntity.ok(projectService.patchInternalName(id, userId, name));
+        return projectService.patchInternalName(id, userId, name);
     }
 
     @DeleteMapping("/{id}")
@@ -84,31 +84,31 @@ public class ProjectController {
 
     @PutMapping("/{id}/approve")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<ProjectResponse> approve(@PathVariable UUID id,
-                                                   @AuthenticationPrincipal UUID coordinatorId) {
-        return ResponseEntity.ok(projectService.approve(id, coordinatorId));
+    public ProjectResponse approve(@PathVariable UUID id,
+                                   @AuthenticationPrincipal UUID coordinatorId) {
+        return projectService.approve(id, coordinatorId);
     }
 
     @PutMapping("/{id}/disapprove")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<ProjectResponse> disapprove(@PathVariable UUID id,
-                                                      @AuthenticationPrincipal UUID coordinatorId) {
-        return ResponseEntity.ok(projectService.disapprove(id, coordinatorId));
+    public ProjectResponse disapprove(@PathVariable UUID id,
+                                      @AuthenticationPrincipal UUID coordinatorId) {
+        return projectService.disapprove(id, coordinatorId);
     }
 
     @PutMapping("/{id}/retract")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<ProjectResponse> retract(@PathVariable UUID id,
-                                                   @AuthenticationPrincipal UUID coordinatorId) {
-        return ResponseEntity.ok(projectService.retract(id, coordinatorId));
+    public ProjectResponse retract(@PathVariable UUID id,
+                                   @AuthenticationPrincipal UUID coordinatorId) {
+        return projectService.retract(id, coordinatorId);
     }
 
     @PutMapping("/{id}/deadline")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<ProjectResponse> setDeadline(
+    public ProjectResponse setDeadline(
             @PathVariable UUID id,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime deadline) {
-        return ResponseEntity.ok(projectService.setDeadline(id, deadline));
+        return projectService.setDeadline(id, deadline);
     }
 
     @PutMapping("/global-deadline")
@@ -120,9 +120,9 @@ public class ProjectController {
 
     @PutMapping("/{projectId}/assign/{partyId}")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<ProjectResponse> assign(@PathVariable UUID projectId,
-                                                  @PathVariable UUID partyId,
-                                                  @AuthenticationPrincipal UUID coordinatorId) {
-        return ResponseEntity.ok(projectService.assignToParty(projectId, partyId, coordinatorId));
+    public ProjectResponse assign(@PathVariable UUID projectId,
+                                  @PathVariable UUID partyId,
+                                  @AuthenticationPrincipal UUID coordinatorId) {
+        return projectService.assignToParty(projectId, partyId, coordinatorId);
     }
 }

@@ -1,12 +1,10 @@
 package com.talentbridge.controller;
 import com.talentbridge.dto.request.ChatRequest;
 import com.talentbridge.dto.response.ChatResponse;
-import com.talentbridge.entity.User;
 import com.talentbridge.repository.UserRepository;
 import com.talentbridge.service.OpenAIService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import java.util.UUID;
@@ -17,11 +15,11 @@ public class ChatController {
     private final UserRepository userRepository;
 
     @PostMapping
-    public ResponseEntity<ChatResponse> chat(@AuthenticationPrincipal UUID userId,
-                                              @Valid @RequestBody ChatRequest req) {
-        User user = userRepository.findById(userId).orElseThrow();
-        return ResponseEntity.ok(ChatResponse.builder()
-            .message(openAIService.chat(req, user.getRole().name()))
-            .model("gpt-4o-mini").build());
+    public ChatResponse chat(@AuthenticationPrincipal UUID userId,
+                             @Valid @RequestBody ChatRequest req) {
+        userRepository.findById(userId).orElseThrow();
+        return ChatResponse.builder()
+            .message(openAIService.chat(req))
+            .model("gpt-4o-mini").build();
     }
 }

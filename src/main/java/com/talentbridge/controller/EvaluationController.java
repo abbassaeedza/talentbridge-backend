@@ -14,16 +14,16 @@ public class EvaluationController {
 
     @PostMapping("/trigger/{submissionId}")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<EvaluationReport> trigger(@PathVariable UUID submissionId,
-                                                     @AuthenticationPrincipal UUID coordinatorId) {
-        return ResponseEntity.ok(evaluationService.triggerEvaluation(submissionId, coordinatorId));
+    public EvaluationReport trigger(@PathVariable UUID submissionId,
+                                    @AuthenticationPrincipal UUID coordinatorId) {
+        return evaluationService.triggerEvaluation(submissionId, coordinatorId);
     }
 
     @PutMapping("/{reportId}/finalize")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<EvaluationReport> finalize(@PathVariable UUID reportId,
-                                                      @AuthenticationPrincipal UUID coordinatorId) {
-        return ResponseEntity.ok(evaluationService.finalizeReport(reportId, coordinatorId));
+    public EvaluationReport finalize(@PathVariable UUID reportId,
+                                     @AuthenticationPrincipal UUID coordinatorId) {
+        return evaluationService.finalizeReport(reportId, coordinatorId);
     }
 
     @GetMapping("/submission/{submissionId}")

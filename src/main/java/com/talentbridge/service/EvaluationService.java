@@ -45,13 +45,12 @@ public class EvaluationService {
         String token = party.getLeader().getGithubAccessToken();
 
         String repoContent = gitHubService.fetchRepositoryContent(submission.getRepoUrl(), token);
-        List<String> contributorStats = gitHubService.fetchContributorStats(submission.getRepoUrl(), token);
-        Map<String, Integer> commitMap = gitHubService.fetchCommitCountPerAuthor(submission.getRepoUrl(), token);
+        GitHubService.ContributorData contributors = gitHubService.fetchContributorData(submission.getRepoUrl(), token);
 
         String aiJson = openAIService.evaluateRepository(repoContent, project.getScope(),
-            project.getDeliverables(), contributorStats);
+            project.getDeliverables(), contributors.stats());
 
-        EvaluationReport report = parseAndPersist(aiJson, submission, coordinator, party, commitMap);
+        EvaluationReport report = parseAndPersist(aiJson, submission, coordinator, party, contributors.commitCounts());
         party.getMembers().forEach(m -> scorecardService.addEntry(m, project, report));
 
         submission.setStatus(SubmissionStatus.EVALUATED);

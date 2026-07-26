@@ -5,36 +5,36 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.talentbridge.dto.request.ChatRequest;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import okhttp3.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class OpenAIService {
-    @Value("${openai.api-key}")     private String apiKey;
-    @Value("${openai.base-url}")    private String baseUrl;
-    @Value("${openai.chat-model}")  private String chatModel;
+    @Value("${openai.api-key}") private String apiKey;
+    @Value("${openai.base-url}") private String baseUrl;
+    @Value("${openai.chat-model}") private String chatModel;
     @Value("${openai.evaluation-model}") private String evalModel;
-    @Value("${openai.max-tokens}")  private int maxTokens;
+    @Value("${openai.max-tokens}") private int maxTokens;
     @Value("${openai.timeout-seconds}") private int timeoutSeconds;
 
-    private final ObjectMapper mapper = new ObjectMapper();
-
-    private OkHttpClient client() {
-        return new OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(timeoutSeconds, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
+    private final ObjectMapper mapper;
+    private final HttpClient client = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(30))
             .build();
-    }
 
-    public String chat(ChatRequest req, String userRole) {
-        String system = buildChatSystem(req.getContext(), userRole);
-        return call(chatModel, system, req.getMessage(), req.getHistory(), maxTokens);
+    public String chat(ChatRequest req) {
+        return call(chatModel, buildChatSystem(req.getContext()), req.getMessage(), req.getHistory(), maxTokens);
     }
 
     public String evaluateRepository(String repoContent, String scope, String deliverables,
@@ -42,7 +42,7 @@ public class OpenAIService {
         String system = """
             You are an expert software engineering evaluator for TalentBridge.
             Evaluate a student team's GitHub repository against their project brief.
-            Return ONLY a valid JSON object — no markdown fences, no preamble:
+            Return ONLY a valid JSON object - no markdown fences, no preamble:
             {
               "aiDetectionScore": <0-100>,
               "aiDetectionNotes": "<reasoning>",
@@ -59,15 +59,15 @@ public class OpenAIService {
             }
             """;
         String user = String.format(
-            "PROJECT SCOPE:\n%s\n\nDELIVERABLES:\n%s\n\nCONTRIBUTORS:\n%s\n\nREPO CONTENT:\n%s",
-            scope != null ? scope : "Not specified",
-            deliverables != null ? deliverables : "Not specified",
-            String.join("\n", contributorStats),
-            repoContent);
+                "PROJECT SCOPE:\n%s\n\nDELIVERABLES:\n%s\n\nCONTRIBUTORS:\n%s\n\nREPO CONTENT:\n%s",
+                scope != null ? scope : "Not specified",
+                deliverables != null ? deliverables : "Not specified",
+                String.join("\n", contributorStats),
+                repoContent);
         return call(evalModel, system, user, null, 2048);
     }
 
-    private String buildChatSystem(String context, String userRole) {
+    private String buildChatSystem(String context) {
         if ("COMPANY_PROJECT_CREATION".equals(context)) {
             return """
                 You are an AI assistant helping a company post a project on TalentBridge.
@@ -83,51 +83,42 @@ public class OpenAIService {
     }
 
     private String call(String model, String system, String userMessage,
-                        List<ChatRequest.ChatMessageDto> history, int maxTok) {
+                        List<ChatRequest.ChatMessageDto> history, int maxTokens) {
         try {
             ArrayNode messages = mapper.createArrayNode();
-            ObjectNode sysMsg = mapper.createObjectNode();
-            sysMsg.put("role", "system"); sysMsg.put("content", system);
-            messages.add(sysMsg);
-
-            if (history != null) {
-                for (ChatRequest.ChatMessageDto h : history) {
-                    ObjectNode m = mapper.createObjectNode();
-                    m.put("role", h.getRole()); m.put("content", h.getContent());
-                    messages.add(m);
-                }
-            }
-
-            ObjectNode userMsg = mapper.createObjectNode();
-            userMsg.put("role", "user"); userMsg.put("content", userMessage);
-            messages.add(userMsg);
+            messages.add(message("system", system));
+            if (history != null) history.forEach(item -> messages.add(message(item.getRole(), item.getContent())));
+            messages.add(message("user", userMessage));
 
             ObjectNode body = mapper.createObjectNode();
-            body.put("model", model); body.set("messages", messages);
-            body.put("max_tokens", maxTok); body.put("temperature", 0.7);
+            body.put("model", model);
+            body.set("messages", messages);
+            body.put("max_tokens", maxTokens);
+            body.put("temperature", 0.7);
 
-            RequestBody requestBody = RequestBody.create(
-                mapper.writeValueAsString(body),
-                MediaType.get("application/json; charset=utf-8"));
-
-            Request request = new Request.Builder()
-                .url(baseUrl + "/chat/completions")
-                .header("Authorization", "Bearer " + apiKey)
-                .header("Content-Type", "application/json")
-                .post(requestBody).build();
-
-            try (Response response = client().newCall(request).execute()) {
-                if (!response.isSuccessful()) {
-                    String err = response.body() != null ? response.body().string() : "no body";
-                    log.error("OpenAI error {}: {}", response.code(), err);
-                    throw new RuntimeException("OpenAI API error: " + response.code());
-                }
-                JsonNode json = mapper.readTree(response.body().string());
-                return json.get("choices").get(0).get("message").get("content").asText();
+            HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/chat/completions"))
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .header("Authorization", "Bearer " + apiKey)
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
+                    .build();
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                log.error("OpenAI error {}: {}", response.statusCode(), response.body());
+                throw new RuntimeException("OpenAI API error: " + response.statusCode());
             }
+            JsonNode json = mapper.readTree(response.body());
+            return json.path("choices").path(0).path("message").path("content").asText();
         } catch (Exception e) {
             log.error("OpenAI call failed", e);
             throw new RuntimeException("AI service unavailable: " + e.getMessage(), e);
         }
+    }
+
+    private ObjectNode message(String role, String content) {
+        ObjectNode message = mapper.createObjectNode();
+        message.put("role", role);
+        message.put("content", content);
+        return message;
     }
 }

@@ -26,88 +26,88 @@ public class UserController {
     private final GitHubService gitHubService;
 
     @GetMapping("/me")
-    public ResponseEntity<UserResponse> getMe(@AuthenticationPrincipal UUID userId) {
-        return ResponseEntity.ok(userService.toResponse(userService.getById(userId)));
+    public UserResponse getMe(@AuthenticationPrincipal UUID userId) {
+        return userService.toResponse(userService.getById(userId));
     }
 
     @PostMapping("/onboarding")
     @PreAuthorize("hasRole('STUDENT')")
-    public ResponseEntity<StudentProfile> completeOnboarding(
+    public StudentProfile completeOnboarding(
             @AuthenticationPrincipal UUID userId,
             @RequestBody StudentOnboardingRequest req) {
-        return ResponseEntity.ok(userService.completeOnboarding(userId, req));
+        return userService.completeOnboarding(userId, req);
     }
 
     @GetMapping("/my/scorecard")
     @PreAuthorize("hasRole('STUDENT')")
-    public ResponseEntity<Scorecard> getMyScorecard(@AuthenticationPrincipal UUID userId) {
-        return ResponseEntity.ok(scorecardService.getByStudentId(userId));
+    public Scorecard getMyScorecard(@AuthenticationPrincipal UUID userId) {
+        return scorecardService.getByStudentId(userId);
     }
 
     @GetMapping("/{userId}/scorecard")
-    public ResponseEntity<Scorecard> getScorecard(@PathVariable UUID userId) {
-        return ResponseEntity.ok(scorecardService.getByStudentId(userId));
+    public Scorecard getScorecard(@PathVariable UUID userId) {
+        return scorecardService.getByStudentId(userId);
     }
 
     @GetMapping("/pending")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<PageResponse<UserResponse>> getPending(
+    public PageResponse<UserResponse> getPending(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(userService.getPendingUsers(page, size));
+        return userService.getPendingUsers(page, size);
     }
 
     @PutMapping("/{userId}/approve")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<UserResponse> approve(
+    public UserResponse approve(
             @PathVariable UUID userId,
             @AuthenticationPrincipal UUID coordinatorId) {
-        return ResponseEntity.ok(userService.approveUser(userId, coordinatorId));
+        return userService.approveUser(userId, coordinatorId);
     }
 
     @PutMapping("/{userId}/reject")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<UserResponse> reject(
+    public UserResponse reject(
             @PathVariable UUID userId,
             @RequestParam(required = false) String reason,
             @AuthenticationPrincipal UUID coordinatorId) {
-        return ResponseEntity.ok(userService.rejectUser(userId, reason));
+        return userService.rejectUser(userId, reason);
     }
 
     @PutMapping("/{userId}/suspend")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<UserResponse> suspend(@PathVariable UUID userId) {
-        return ResponseEntity.ok(userService.suspendUser(userId));
+    public UserResponse suspend(@PathVariable UUID userId) {
+        return userService.suspendUser(userId);
     }
 
     @PutMapping("/{userId}/unsuspend")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<UserResponse> unsuspend(@PathVariable UUID userId) {
-        return ResponseEntity.ok(userService.unsuspendUser(userId));
+    public UserResponse unsuspend(@PathVariable UUID userId) {
+        return userService.unsuspendUser(userId);
     }
 
     @GetMapping("/students")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<java.util.List<UserResponse>> getStudents() {
-        return ResponseEntity.ok(userService.getByRole(UserRole.STUDENT));
+    public java.util.List<UserResponse> getStudents() {
+        return userService.getByRole(UserRole.STUDENT);
     }
 
     @GetMapping("/companies")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<java.util.List<UserResponse>> getCompanies() {
-        return ResponseEntity.ok(userService.getByRole(UserRole.COMPANY));
+    public java.util.List<UserResponse> getCompanies() {
+        return userService.getByRole(UserRole.COMPANY);
     }
 
     @GetMapping("/supervisors")
     @PreAuthorize("hasAnyRole('COORDINATOR','STUDENT')")
-    public ResponseEntity<java.util.List<UserResponse>> getSupervisors() {
-        return ResponseEntity.ok(userService.getSupervisors());
+    public java.util.List<UserResponse> getSupervisors() {
+        return userService.getSupervisors();
     }
 
     @GetMapping("/coordinators")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public ResponseEntity<java.util.List<UserResponse>> getCoordinators() {
-        return ResponseEntity.ok(userService.getCoordinators());
+    public java.util.List<UserResponse> getCoordinators() {
+        return userService.getCoordinators();
     }
 
     @PostMapping("/broadcast")
@@ -125,27 +125,27 @@ public class UserController {
 
     @PostMapping("/github/callback")
     @PreAuthorize("hasRole('STUDENT')")
-    public ResponseEntity<Map<String, String>> githubCallback(
+    public Map<String, String> githubCallback(
             @AuthenticationPrincipal UUID userId,
             @RequestParam String code) {
         Map<String, String> tokenData = gitHubService.exchangeCodeForToken(code);
         String accessToken = tokenData.get("access_token");
         String username = gitHubService.getGitHubUsername(accessToken);
         userService.linkGitHub(userId, username, accessToken);
-        return ResponseEntity.ok(Map.of(
+        return Map.of(
             "message", "GitHub linked successfully",
-            "username", username != null ? username : ""));
+            "username", username != null ? username : "");
     }
 
     // ── Notifications ─────────────────────────────────────────────────────────
 
     @GetMapping("/notifications")
-    public ResponseEntity<?> getNotifications(
+    public Map<String, Object> getNotifications(
             @AuthenticationPrincipal UUID userId,
             @RequestParam(defaultValue = "0") int page) {
-        return ResponseEntity.ok(Map.of(
+        return Map.of(
             "notifications", notificationService.getForUser(userId, page),
-            "unreadCount",   notificationService.countUnread(userId)));
+            "unreadCount", notificationService.countUnread(userId));
     }
 
     @PutMapping("/notifications/{id}/read")
