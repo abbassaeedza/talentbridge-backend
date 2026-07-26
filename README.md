@@ -12,6 +12,7 @@ This repository contains its Spring Boot REST API.
 - GitHub repository analysis
 - OpenAI-powered chat and project evaluation
 - Multipart submission uploads
+- Resend email delivery for every in-app notification
 
 ## Technology
 
@@ -70,10 +71,19 @@ Flyway applies database migrations during startup.
 | `SUPABASE_URL` | Supabase project URL enabling production object storage |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase service-role JWT |
 | `SUPABASE_STORAGE_BUCKET` | Public Storage bucket, defaults to `talentbridge-files` |
+| `RESEND_API_KEY` | Server-only Resend API key |
+| `RESEND_FROM_EMAIL` | Sender identity, such as `TalentBridge <notifications@example.com>` |
+| `APP_DEMO_MODE` | Enables backend-only public demo login and coordinator password synchronization |
+| `APP_SEED_COORDINATOR_EMAIL` | Coordinator account used by the data seeder and demo login |
+| `APP_SEED_COORDINATOR_PASSWORD` | Coordinator password used by the data seeder and demo login |
+| `PARTY_MIN_SIZE` | Minimum party size, defaults to `2` |
+| `PARTY_MAX_SIZE` | Maximum party size, defaults to `3` |
 | `SERVER_PORT` | HTTP port, defaults to `8080` |
 
 Development defaults exist for convenience.
 Always override passwords, tokens, and seed credentials in a public deployment.
+Keep `APP_DEMO_MODE=true` only while the coordinator account is intentionally disposable and public.
+Set it to `false` before launch.
 
 ## Commands
 
@@ -92,7 +102,7 @@ See [Render and Supabase deployment](docs/DEPLOYMENT.md) for the complete free-t
 
 | Prefix | Purpose |
 | --- | --- |
-| `/api/auth` | Registration, login, refresh, and password management |
+| `/api/auth` | Registration, login, demo login, refresh, and password management |
 | `/api/users` | Profiles, approvals, GitHub linking, and notifications |
 | `/api/projects` | Project creation, discovery, approval, and assignment |
 | `/api/parties` | Team membership, applications, and supervision |

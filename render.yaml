@@ -21,6 +21,10 @@ services:
         value: require
       - key: JWT_SECRET
         generateValue: true
+      - key: JWT_EXPIRATION
+        value: '86400000'
+      - key: JWT_REFRESH_EXPIRATION
+        value: '604800000'
       - key: FRONTEND_URL
         sync: false
       - key: OPENAI_API_KEY
@@ -37,7 +41,17 @@ services:
         sync: false
       - key: SUPABASE_STORAGE_BUCKET
         value: talentbridge-files
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: APP_DEMO_MODE
+        value: 'true'
       - key: APP_SEED_COORDINATOR_EMAIL
         sync: false
       - key: APP_SEED_COORDINATOR_PASSWORD
         sync: false
+      - key: PARTY_MIN_SIZE
+        value: '2'
+      - key: PARTY_MAX_SIZE
+        value: '3'

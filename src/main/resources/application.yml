@@ -69,8 +69,8 @@ app:
     coordinator-password: ${APP_SEED_COORDINATOR_PASSWORD:Admin1234!}
   frontend-url: ${FRONTEND_URL:http://localhost:3000}
   party:
-    min-size: 2
-    max-size: 3
+    min-size: ${PARTY_MIN_SIZE:2}
+    max-size: ${PARTY_MAX_SIZE:3}
 
 logging:
   level:

@@ -60,7 +60,17 @@ SUPABASE_STORAGE_BUCKET=talentbridge-files
 
 Never expose `SUPABASE_SERVICE_ROLE_KEY` in Vercel variables, frontend files, logs, screenshots, or GitHub.
 
-## 3. Create GitHub OAuth credentials
+## 3. Configure Resend
+
+1. Create a Resend account and API key.
+2. For an initial test, use `TalentBridge <onboarding@resend.dev>` as `RESEND_FROM_EMAIL`.
+3. The `resend.dev` sender can deliver only to the email address that owns the Resend account.
+4. To test with other recipients, add and verify a domain in Resend, then use an address on that domain.
+
+Every existing in-app notification also attempts an email with the same title and message.
+Resend delivery failure is logged and does not fail the action that created the notification.
+
+## 4. Create GitHub OAuth credentials
 
 Create a GitHub OAuth App after Vercel assigns the frontend URL.
 
@@ -72,12 +82,15 @@ Authorization callback URL: https://your-vercel-project.vercel.app/github/callba
 Copy its client ID and client secret for Render.
 The frontend receives only the client ID.
 
-## 4. Deploy the Render Blueprint
+## 5. Deploy the Render Blueprint
 
 1. Open Render and select **New > Blueprint**.
 2. Connect `abbassaeedza/talentbridge-backend`.
 3. Render reads the committed `render.yaml` and creates `talentbridge-backend`.
 4. Enter every variable marked for dashboard input.
+
+For an existing Blueprint service, Render does not prompt again for newly added `sync: false` variables during later syncs.
+Add `RESEND_API_KEY` and `RESEND_FROM_EMAIL` manually under the service's **Environment** page, then redeploy.
 
 Required dashboard values:
 
@@ -94,15 +107,25 @@ GITHUB_CLIENT_SECRET=<GitHub OAuth client secret>
 GITHUB_REDIRECT_URI=https://your-vercel-project.vercel.app/github/callback
 SUPABASE_URL=https://your-project-reference.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<Supabase service-role JWT>
+RESEND_API_KEY=<Resend API key>
+RESEND_FROM_EMAIL=TalentBridge <onboarding@resend.dev>
 APP_SEED_COORDINATOR_EMAIL=<private coordinator email>
 APP_SEED_COORDINATOR_PASSWORD=<strong unique password>
 ```
 
 `FRONTEND_URL` must exactly match the production Vercel origin without a trailing slash because the backend permits one CORS origin.
 Render generates `JWT_SECRET` from `render.yaml`.
+The Blueprint also sets `JWT_EXPIRATION=86400000`, `JWT_REFRESH_EXPIRATION=604800000`, `PARTY_MIN_SIZE=2`, `PARTY_MAX_SIZE=3`, and `APP_DEMO_MODE=true`.
+These values do not need manual entry unless you intentionally override them in Render.
 Flyway creates and upgrades the Supabase schema during backend startup.
 
-## 5. Finish Vercel configuration
+### Demo coordinator behavior
+
+While `APP_DEMO_MODE=true`, each backend startup synchronizes the stored coordinator password with `APP_SEED_COORDINATOR_PASSWORD`.
+The frontend demo card calls the backend demo-login endpoint and never receives the password.
+Changing a `VITE_*` value cannot safely solve this because Vite embeds those values in public browser code.
+
+## 6. Finish Vercel configuration
 
 Copy the Render public URL into the frontend's Vercel variable:
 
@@ -121,6 +144,15 @@ Redeploy the frontend after changing the variable.
 5. Confirm the saved document URL begins with `SUPABASE_URL/storage/v1/object/public/talentbridge-files/`.
 6. Open the document URL in a private browser window.
 7. Complete GitHub OAuth and confirm the linked username appears.
+8. Trigger an in-app notification and confirm the matching email appears in the Resend dashboard.
+
+## Before public launch
+
+1. Set `APP_DEMO_MODE=false` in Render.
+2. Redeploy the backend and confirm `POST /api/auth/demo-login` returns HTTP 404.
+3. Change the coordinator password through the authenticated password-change flow.
+4. Remove the demo card from the frontend and redeploy Vercel.
+5. Replace `onboarding@resend.dev` with an address on a verified sending domain.
 
 ## Free-tier behavior
 
@@ -143,6 +175,11 @@ Preview deployment origins are not allowed by the current single-origin configur
 ### Upload returns HTTP 400 or 404
 
 Confirm the bucket is named exactly `talentbridge-files`, is public, and the service-role JWT belongs to the same Supabase project as `SUPABASE_URL`.
+
+### Resend returns HTTP 403
+
+The `onboarding@resend.dev` sender can send only to the Resend account owner's email.
+Verify a custom domain and update `RESEND_FROM_EMAIL` to deliver to other users.
 
 ### Backend responds slowly once
 
