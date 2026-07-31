@@ -1,187 +1,218 @@
-# Render and Supabase Deployment
+# Cloud Run and Supabase Deployment
 
-This guide deploys the TalentBridge Spring Boot API on Render's free web-service plan with Supabase PostgreSQL and Storage.
+This guide deploys the TalentBridge Spring Boot API to Google Cloud Run.
+Supabase supplies PostgreSQL and Storage.
+Vercel serves the frontend.
 
 ## Architecture
 
 ```text
 Vercel frontend
     |
-Render Spring Boot API
+Cloud Run Spring Boot API
     |-- Supabase PostgreSQL
     `-- Supabase Storage
 ```
 
-## 1. Create the Supabase project
+## Google Cloud resources
 
-1. Create a project in the Supabase dashboard.
-2. Save the database password.
-3. Wait for the project to become healthy.
-
-Open **Project Settings > Database > Connection string** and select the **Session pooler**.
-Session mode on port `5432` suits a persistent Java backend and supports IPv4.
-
-Map the connection string to Render variables:
+The deployment uses these fixed resources:
 
 ```text
-postgresql://DB_USERNAME:DB_PASSWORD@DB_HOST:5432/DB_NAME
+Project: project-4343c1b3-d768-4b8f-bff
+Region: asia-south1
+Cloud Run service: talentbridge-backend
+Artifact Registry repository: talentbridge
 ```
 
-Typical Supabase values are:
+Cloud Run uses one CPU and 1 GiB of memory.
+The service keeps zero minimum instances and permits one maximum instance.
+The service uses request-based CPU allocation and scales to zero when idle.
+
+## Billing controls
+
+The project has a monthly budget named `TalentBridge Cloud Run safety`.
+The budget amount is `$1 USD`.
+It sends alerts at `$0.01`, `$0.50`, `$0.90`, and `$1.00` of current spending.
+
+A Google Cloud budget sends alerts but does not stop services or charges.
+The one-instance limit reduces exposure but does not guarantee a zero bill.
+Run this command to stop project billing and the backend:
+
+```bash
+gcloud billing projects unlink project-4343c1b3-d768-4b8f-bff
+```
+
+Any cost recorded before the unlink operation remains payable.
+
+## Runtime variables
+
+Cloud Run receives these values during the initial deployment:
 
 ```text
-DB_HOST=aws-0-your-region.pooler.supabase.com
-DB_PORT=5432
-DB_NAME=postgres
-DB_USERNAME=postgres.your-project-reference
-DB_PASSWORD=your-database-password
-DB_SSL_MODE=require
+DB_HOST
+DB_PORT
+DB_NAME
+DB_USERNAME
+DB_PASSWORD
+DB_SSL_MODE
+JWT_SECRET
+JWT_EXPIRATION
+JWT_REFRESH_EXPIRATION
+OPENAI_API_KEY
+GITHUB_CLIENT_ID
+GITHUB_CLIENT_SECRET
+GITHUB_REDIRECT_URI
+LOCAL_STORAGE_PATH
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+SUPABASE_STORAGE_BUCKET
+RESEND_API_KEY
+RESEND_FROM_EMAIL
+FRONTEND_URL
+APP_DEMO_MODE
+APP_SEED_COORDINATOR_EMAIL
+APP_SEED_COORDINATOR_PASSWORD
+PARTY_MIN_SIZE
+PARTY_MAX_SIZE
 ```
 
-Do not use transaction mode on port `6543` for Flyway migrations.
+Cloud Run injects `PORT=8080`.
+The application gives `PORT` precedence over the local `SERVER_PORT` value.
 
-## 2. Create Storage
+Never commit `.env` or print its values in deployment logs.
+Never expose backend secrets through Vite or Vercel variables.
 
-1. Open **Storage** in Supabase.
-2. Create a bucket named `talentbridge-files`.
-3. Mark the bucket public.
-4. Keep the file-size limit at least `50 MB` if submission documents can reach the backend limit.
+## Supabase database
 
-Every object in a public bucket is readable by anyone who knows its URL.
-Uploads remain protected because only the Render backend receives the service-role key.
+Use the Supabase Session pooler on port `5432`.
+Use the pooler username that includes the Supabase project reference.
+Set `DB_SSL_MODE=require`.
 
-Open **Project Settings > API** and copy:
+Flyway creates and updates the database schema during backend startup.
+
+## Supabase Storage
+
+Create a public bucket named `talentbridge-files`.
+Set its file-size limit to at least `50 MB`.
+Keep `SUPABASE_SERVICE_ROLE_KEY` on the backend only.
+
+The backend authenticates uploads with the service-role key.
+Public object URLs remain readable without authentication.
+
+## Resend
+
+Set `RESEND_API_KEY` and `RESEND_FROM_EMAIL` in the backend environment.
+Use `TalentBridge <onboarding@resend.dev>` for initial tests.
+The test sender can deliver only to the Resend account owner.
+
+Verify a sending domain before public launch.
+Use an address from that domain after verification.
+
+## Demo coordinator
+
+Set `APP_DEMO_MODE=true` during product testing.
+Set the public demo email and password through the seed variables.
+
+Each backend startup synchronizes the demo coordinator password while demo mode is active.
+The frontend demo-login request never receives or stores the password.
+
+Set `APP_DEMO_MODE=false` before public launch.
+Change the coordinator password after demo mode is disabled.
+
+## Initial deployment
+
+Enable the required APIs:
+
+```bash
+gcloud services enable \
+  run.googleapis.com \
+  cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com \
+  iamcredentials.googleapis.com \
+  sts.googleapis.com \
+  --project=project-4343c1b3-d768-4b8f-bff
+```
+
+Build the image from the backend repository:
+
+```bash
+gcloud builds submit \
+  --project=project-4343c1b3-d768-4b8f-bff \
+  --region=asia-south1 \
+  --tag=asia-south1-docker.pkg.dev/project-4343c1b3-d768-4b8f-bff/talentbridge/talentbridge-backend:initial \
+  .
+```
+
+Deploy the image with the local environment file:
+
+```bash
+gcloud run deploy talentbridge-backend \
+  --project=project-4343c1b3-d768-4b8f-bff \
+  --region=asia-south1 \
+  --image=asia-south1-docker.pkg.dev/project-4343c1b3-d768-4b8f-bff/talentbridge/talentbridge-backend:initial \
+  --allow-unauthenticated \
+  --memory=1Gi \
+  --cpu=1 \
+  --min=0 \
+  --max=1 \
+  --concurrency=40 \
+  --timeout=120 \
+  --port=8080 \
+  --cpu-throttling \
+  --env-vars-file=.env
+```
+
+## Automatic deployment
+
+The workflow at `.github/workflows/deploy-cloud-run.yml` runs after each push to `main`.
+GitHub uses Workload Identity Federation to authenticate without a private key file.
+The identity provider accepts only `abbassaeedza/talentbridge-backend`.
+
+The workflow builds the Docker image on GitHub.
+It pushes the image to Artifact Registry.
+It deploys a new Cloud Run revision with the same resource limits.
+Existing Cloud Run environment variables remain unchanged.
+
+## Frontend connection
+
+Copy the generated Cloud Run URL into the Vercel production variable:
 
 ```text
-SUPABASE_URL=https://your-project-reference.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-jwt
-SUPABASE_STORAGE_BUCKET=talentbridge-files
+VITE_API_URL=https://talentbridge-backend-<generated-id>.asia-south1.run.app
 ```
 
-Never expose `SUPABASE_SERVICE_ROLE_KEY` in Vercel variables, frontend files, logs, screenshots, or GitHub.
+Redeploy the Vercel frontend after this change.
+Keep `FRONTEND_URL` equal to the exact Vercel production origin without a trailing slash.
 
-## 3. Configure Resend
+## Verification
 
-1. Create a Resend account and API key.
-2. For an initial test, use `TalentBridge <onboarding@resend.dev>` as `RESEND_FROM_EMAIL`.
-3. The `resend.dev` sender can deliver only to the email address that owns the Resend account.
-4. To test with other recipients, add and verify a domain in Resend, then use an address on that domain.
-
-Every existing in-app notification also attempts an email with the same title and message.
-Resend delivery failure is logged and does not fail the action that created the notification.
-
-## 4. Create GitHub OAuth credentials
-
-Create a GitHub OAuth App after Vercel assigns the frontend URL.
-
-```text
-Homepage URL: https://your-vercel-project.vercel.app
-Authorization callback URL: https://your-vercel-project.vercel.app/github/callback
-```
-
-Copy its client ID and client secret for Render.
-The frontend receives only the client ID.
-
-## 5. Deploy the Render Blueprint
-
-1. Open Render and select **New > Blueprint**.
-2. Connect `abbassaeedza/talentbridge-backend`.
-3. Render reads the committed `render.yaml` and creates `talentbridge-backend`.
-4. Enter every variable marked for dashboard input.
-
-For an existing Blueprint service, Render does not prompt again for newly added `sync: false` variables during later syncs.
-Add `RESEND_API_KEY` and `RESEND_FROM_EMAIL` manually under the service's **Environment** page, then redeploy.
-
-Required dashboard values:
-
-```text
-DB_HOST=<Supabase session-pooler host>
-DB_PORT=5432
-DB_NAME=postgres
-DB_USERNAME=<Supabase session-pooler user>
-DB_PASSWORD=<Supabase database password>
-FRONTEND_URL=https://your-vercel-project.vercel.app
-OPENAI_API_KEY=<OpenAI API key>
-GITHUB_CLIENT_ID=<GitHub OAuth client ID>
-GITHUB_CLIENT_SECRET=<GitHub OAuth client secret>
-GITHUB_REDIRECT_URI=https://your-vercel-project.vercel.app/github/callback
-SUPABASE_URL=https://your-project-reference.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=<Supabase service-role JWT>
-RESEND_API_KEY=<Resend API key>
-RESEND_FROM_EMAIL=TalentBridge <onboarding@resend.dev>
-APP_SEED_COORDINATOR_EMAIL=<private coordinator email>
-APP_SEED_COORDINATOR_PASSWORD=<strong unique password>
-```
-
-`FRONTEND_URL` must exactly match the production Vercel origin without a trailing slash because the backend permits one CORS origin.
-Render generates `JWT_SECRET` from `render.yaml`.
-The Blueprint also sets `JWT_EXPIRATION=86400000`, `JWT_REFRESH_EXPIRATION=604800000`, `PARTY_MIN_SIZE=2`, `PARTY_MAX_SIZE=3`, and `APP_DEMO_MODE=true`.
-These values do not need manual entry unless you intentionally override them in Render.
-Flyway creates and upgrades the Supabase schema during backend startup.
-
-### Demo coordinator behavior
-
-While `APP_DEMO_MODE=true`, each backend startup synchronizes the stored coordinator password with `APP_SEED_COORDINATOR_PASSWORD`.
-The frontend demo card calls the backend demo-login endpoint and never receives the password.
-Changing a `VITE_*` value cannot safely solve this because Vite embeds those values in public browser code.
-
-## 6. Finish Vercel configuration
-
-Copy the Render public URL into the frontend's Vercel variable:
-
-```text
-VITE_API_URL=https://your-render-service.onrender.com
-```
-
-Redeploy the frontend after changing the variable.
-
-## Verify
-
-1. Open the Render service logs and confirm Flyway migration success.
-2. Log in through the Vercel frontend.
-3. Confirm the browser shows no mixed-content or CORS errors.
-4. Upload a small submission document.
-5. Confirm the saved document URL begins with `SUPABASE_URL/storage/v1/object/public/talentbridge-files/`.
-6. Open the document URL in a private browser window.
-7. Complete GitHub OAuth and confirm the linked username appears.
-8. Trigger an in-app notification and confirm the matching email appears in the Resend dashboard.
-
-## Before public launch
-
-1. Set `APP_DEMO_MODE=false` in Render.
-2. Redeploy the backend and confirm `POST /api/auth/demo-login` returns HTTP 404.
-3. Change the coordinator password through the authenticated password-change flow.
-4. Remove the demo card from the frontend and redeploy Vercel.
-5. Replace `onboarding@resend.dev` with an address on a verified sending domain.
-
-## Free-tier behavior
-
-Render sleeps after inactivity, so the first API request can take about one minute.
-Supabase may pause inactive free projects and enforces free database, storage, and egress quotas.
-OpenAI API usage is separately billed and is not part of free hosting.
-This setup suits evaluation and demonstration traffic, not uptime-sensitive production use.
+1. Confirm that the Cloud Run revision becomes ready.
+2. Confirm that Flyway completes in the Cloud Run logs.
+3. Call `GET /api/projects?page=0&size=1` through the Cloud Run URL.
+4. Log in through the Vercel frontend.
+5. Upload a small document and open its Supabase URL.
+6. Complete GitHub OAuth and confirm the linked username.
+7. Trigger an in-app notification and confirm the matching Resend event.
 
 ## Troubleshooting
 
-### Database connection fails
+### The service does not start
 
-Use the Session pooler host, port `5432`, pooler username including the project reference, and `DB_SSL_MODE=require`.
+Check the revision logs for database or Flyway errors.
+Confirm that the Supabase pooler values and `DB_SSL_MODE=require` are correct.
 
-### Browser reports CORS failure
+### The browser reports a CORS error
 
-Set `FRONTEND_URL` to the exact Vercel Production origin, then redeploy Render.
-Preview deployment origins are not allowed by the current single-origin configuration.
+Set `FRONTEND_URL` to the exact Vercel production origin.
+Deploy a new revision after the value changes.
 
-### Upload returns HTTP 400 or 404
+### An upload fails
 
-Confirm the bucket is named exactly `talentbridge-files`, is public, and the service-role JWT belongs to the same Supabase project as `SUPABASE_URL`.
+Confirm that the bucket is public and named `talentbridge-files`.
+Confirm that the Supabase URL and service-role key belong to the same project.
 
-### Resend returns HTTP 403
+### The first request is slow
 
-The `onboarding@resend.dev` sender can send only to the Resend account owner's email.
-Verify a custom domain and update `RESEND_FROM_EMAIL` to deliver to other users.
-
-### Backend responds slowly once
-
-Wait for the Render free service to wake.
-Subsequent requests remain fast until it sleeps again.
+Cloud Run starts a new instance after the service scales to zero.
+Later requests remain fast while the instance stays active.

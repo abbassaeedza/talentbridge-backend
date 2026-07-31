@@ -1,0 +1,53 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: project-4343c1b3-d768-4b8f-bff
+  REGION: asia-south1
+  REPOSITORY: talentbridge
+  SERVICE: talentbridge-backend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: projects/1089736501943/locations/global/workloadIdentityPools/github/providers/talentbridge-backend
+          service_account: github-cloud-run@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Build and push image
+        run: |
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          docker build --tag "$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$SERVICE:$GITHUB_SHA" .
+          docker push "$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$SERVICE:$GITHUB_SHA"
+
+      - uses: google-github-actions/deploy-cloudrun@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          service: talentbridge-backend
+          region: asia-south1
+          image: asia-south1-docker.pkg.dev/project-4343c1b3-d768-4b8f-bff/talentbridge/talentbridge-backend:${{ github.sha }}
+          flags: >-
+            --allow-unauthenticated
+            --memory=1Gi
+            --cpu=1
+            --min=0
+            --max=1
+            --concurrency=40
+            --timeout=120
+            --port=8080
+            --cpu-throttling
