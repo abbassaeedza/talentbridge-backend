@@ -14,7 +14,7 @@ Vite calls the demo endpoint through the existing auth context, while Render own
 ## Global Constraints
 
 - Keep the frontend and backend as independent Git repositories.
-- Never expose `APP_SEED_COORDINATOR_PASSWORD`, `JWT_SECRET`, `RESEND_API_KEY`, or `SUPABASE_SERVICE_ROLE_KEY` to Vite.
+- Never expose `APP_SEED_COORDINATOR_PASSWORD`, `JWT_SECRET`, `RESEND_API_KEY`, or `SUPABASE_SECRET_KEY` to Vite.
 - Enable public demo authentication only while `APP_DEMO_MODE=true`.
 - Keep in-app notification persistence successful when Resend is unavailable.
 - Send an email for every call to either existing `NotificationService.send(...)` overload.
@@ -536,7 +536,7 @@ git commit -m "docs: document demo deployment"
 Run `git status --short --branch` in each repository.
 Run `git diff HEAD~3 -- . ':!package-lock.json'` in each repository and inspect every change.
 Search tracked files for local secret values and confirm neither `.env` file is tracked.
-Confirm frontend tracked files contain no coordinator password, Resend key, Supabase service-role key, or JWT secret.
+Confirm that frontend tracked files contain no coordinator password, Resend key, Supabase secret key, or JWT secret.
 
 - [ ] **Step 2: Run fresh backend verification**
 

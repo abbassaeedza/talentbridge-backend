@@ -36,7 +36,7 @@ class FileStorageServiceTest {
             FileStorageService service = new FileStorageService();
             String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
             ReflectionTestUtils.setField(service, "supabaseUrl", baseUrl);
-            ReflectionTestUtils.setField(service, "supabaseServiceRoleKey", "server-secret");
+            ReflectionTestUtils.setField(service, "supabaseSecretKey", "server-secret");
             ReflectionTestUtils.setField(service, "supabaseBucket", "talentbridge-files");
             MockMultipartFile file = new MockMultipartFile(
                 "documents", "project brief.pdf", "application/pdf", "document-body".getBytes(StandardCharsets.UTF_8));
@@ -46,7 +46,7 @@ class FileStorageServiceTest {
             assertTrue(path.get().startsWith("/storage/v1/object/talentbridge-files/submissions/party-id/"));
             assertTrue(path.get().endsWith("_project_brief.pdf"));
             assertEquals("server-secret", apiKey.get());
-            assertEquals("Bearer server-secret", authorization.get());
+            assertNull(authorization.get());
             assertEquals("application/pdf", contentType.get());
             assertEquals("document-body", body.get());
             assertEquals(baseUrl + path.get().replace("/storage/v1/object/", "/storage/v1/object/public/"), result);

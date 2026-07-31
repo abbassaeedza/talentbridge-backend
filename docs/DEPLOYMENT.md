@@ -66,7 +66,7 @@ GITHUB_CLIENT_ID
 GITHUB_CLIENT_SECRET
 GITHUB_REDIRECT_URI
 SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY
+SUPABASE_SECRET_KEY
 SUPABASE_STORAGE_BUCKET
 RESEND_API_KEY
 RESEND_FROM_EMAIL
@@ -97,9 +97,10 @@ Flyway creates and updates the database schema during backend startup.
 
 Create a public bucket named `talentbridge-files`.
 Set its file-size limit to at least `50 MB`.
-Keep `SUPABASE_SERVICE_ROLE_KEY` on the backend only.
+Keep `SUPABASE_SECRET_KEY` on the backend only.
 
-The backend authenticates uploads with the service-role key.
+The backend sends the secret key through the `apikey` header.
+The backend does not send the secret key through the `Authorization` header.
 Public object URLs remain readable without authentication.
 
 ## Resend
@@ -215,7 +216,7 @@ Deploy a new revision after the value changes.
 ### An upload fails
 
 Confirm that the bucket is public and named `talentbridge-files`.
-Confirm that the Supabase URL and service-role key belong to the same project.
+Confirm that the Supabase URL and secret key belong to the same project.
 
 ### The first request is slow
 

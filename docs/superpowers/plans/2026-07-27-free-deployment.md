@@ -31,7 +31,7 @@ Local development retains filesystem uploads when Supabase credentials are absen
 
 **Interfaces:**
 
-- Consumes: `MultipartFile`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`
+- Consumes: `MultipartFile`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_STORAGE_BUCKET`
 - Produces: `FileStorageService.upload(MultipartFile, String)` returning a public Supabase URL in production or `/files/...` locally
 
 - [ ] **Step 1: Write failing Supabase upload test**

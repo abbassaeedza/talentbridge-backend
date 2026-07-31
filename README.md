@@ -69,7 +69,7 @@ Flyway applies database migrations during startup.
 | `LOCAL_STORAGE_PATH` | Directory used for uploaded submission files |
 | `DB_SSL_MODE` | PostgreSQL TLS mode, set to `require` for Supabase |
 | `SUPABASE_URL` | Supabase project URL enabling production object storage |
-| `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase service-role JWT |
+| `SUPABASE_SECRET_KEY` | Server-only Supabase secret key |
 | `SUPABASE_STORAGE_BUCKET` | Public Storage bucket, defaults to `talentbridge-files` |
 | `RESEND_API_KEY` | Server-only Resend API key |
 | `RESEND_FROM_EMAIL` | Sender identity, such as `TalentBridge <notifications@example.com>` |
@@ -96,7 +96,7 @@ docker build -t talentbridge-backend .
 
 ## Deployment
 
-See [Render and Supabase deployment](docs/DEPLOYMENT.md) for the complete free-tier setup, required secrets, deployment order, and smoke checks.
+See [Cloud Run and Supabase deployment](docs/DEPLOYMENT.md) for setup, secrets, deployment, and verification instructions.
 
 ## API groups
 

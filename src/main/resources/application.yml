@@ -58,7 +58,7 @@ storage:
 
 supabase:
   url: ${SUPABASE_URL:}
-  service-role-key: ${SUPABASE_SERVICE_ROLE_KEY:}
+  secret-key: ${SUPABASE_SECRET_KEY:}
   storage-bucket: ${SUPABASE_STORAGE_BUCKET:talentbridge-files}
 
 resend:

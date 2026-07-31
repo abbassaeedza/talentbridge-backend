@@ -18,7 +18,7 @@ import java.util.UUID;
 public class FileStorageService {
     @Value("${storage.local-path:./uploads}") private String localPath;
     @Value("${supabase.url:}") private String supabaseUrl;
-    @Value("${supabase.service-role-key:}") private String supabaseServiceRoleKey;
+    @Value("${supabase.secret-key:}") private String supabaseSecretKey;
     @Value("${supabase.storage-bucket:talentbridge-files}") private String supabaseBucket;
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
@@ -50,15 +50,14 @@ public class FileStorageService {
 
     private boolean usesSupabase() {
         return supabaseUrl != null && !supabaseUrl.isBlank()
-            && supabaseServiceRoleKey != null && !supabaseServiceRoleKey.isBlank();
+            && supabaseSecretKey != null && !supabaseSecretKey.isBlank();
     }
 
     private String uploadToSupabase(MultipartFile file, String key) throws IOException {
         String baseUrl = supabaseUrl.replaceAll("/+$", "");
         String objectPath = "/storage/v1/object/" + supabaseBucket + "/" + key;
         HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + objectPath))
-            .header("apikey", supabaseServiceRoleKey)
-            .header("Authorization", "Bearer " + supabaseServiceRoleKey)
+            .header("apikey", supabaseSecretKey)
             .header("Content-Type", file.getContentType() != null ? file.getContentType() : "application/octet-stream")
             .POST(HttpRequest.BodyPublishers.ofByteArray(file.getBytes()))
             .build();

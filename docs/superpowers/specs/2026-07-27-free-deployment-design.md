@@ -22,7 +22,7 @@ Local development keeps filesystem storage when Supabase variables are absent.
 - Keep both GitHub repositories independent.
 - Add no Java storage SDK.
 - Use Java `HttpClient` for Supabase Storage REST requests.
-- Never expose `SUPABASE_SERVICE_ROLE_KEY` to Vercel or browser code.
+- Never expose `SUPABASE_SECRET_KEY` to Vercel or browser code.
 - Use a public Storage bucket because existing submission records contain directly opened document URLs.
 - Accept Render free-tier cold starts and Supabase free-tier limits for demonstration use.
 - Keep OpenAI usage outside the free-hosting guarantee.
