@@ -8,7 +8,9 @@ import com.talentbridge.dto.request.ChatRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -104,14 +106,21 @@ public class OpenAIService {
                     .build();
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                log.error("OpenAI error {}: {}", response.statusCode(), response.body());
-                throw new RuntimeException("OpenAI API error: " + response.statusCode());
+                log.error("OpenAI request failed with status {}", response.statusCode());
+                throw new ResponseStatusException(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "AI service is temporarily unavailable");
             }
             JsonNode json = mapper.readTree(response.body());
             return json.path("choices").path(0).path("message").path("content").asText();
+        } catch (ResponseStatusException e) {
+            throw e;
         } catch (Exception e) {
             log.error("OpenAI call failed", e);
-            throw new RuntimeException("AI service unavailable: " + e.getMessage(), e);
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    "AI service is temporarily unavailable",
+                    e);
         }
     }
 
