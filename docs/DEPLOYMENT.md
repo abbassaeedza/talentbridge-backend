@@ -23,6 +23,8 @@ Project: project-4343c1b3-d768-4b8f-bff
 Region: asia-south1
 Cloud Run service: talentbridge-backend
 Artifact Registry repository: talentbridge
+Runtime service account: talentbridge-runtime@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com
+GitHub deployer: github-cloud-run@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com
 ```
 
 Cloud Run uses one CPU and 1 GiB of memory.
@@ -63,7 +65,6 @@ OPENAI_API_KEY
 GITHUB_CLIENT_ID
 GITHUB_CLIENT_SECRET
 GITHUB_REDIRECT_URI
-LOCAL_STORAGE_PATH
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 SUPABASE_STORAGE_BUCKET
@@ -151,6 +152,7 @@ gcloud run deploy talentbridge-backend \
   --project=project-4343c1b3-d768-4b8f-bff \
   --region=asia-south1 \
   --image=asia-south1-docker.pkg.dev/project-4343c1b3-d768-4b8f-bff/talentbridge/talentbridge-backend:initial \
+  --service-account=talentbridge-runtime@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com \
   --allow-unauthenticated \
   --memory=1Gi \
   --cpu=1 \
@@ -168,6 +170,8 @@ gcloud run deploy talentbridge-backend \
 The workflow at `.github/workflows/deploy-cloud-run.yml` runs after each push to `main`.
 GitHub uses Workload Identity Federation to authenticate without a private key file.
 The identity provider accepts only `abbassaeedza/talentbridge-backend`.
+The deployer can write only to the TalentBridge Artifact Registry repository, deploy only this Cloud Run service, and act only as the dedicated runtime service account.
+Public access is configured once on the Cloud Run service and is not changed by each deployment.
 
 The workflow builds the Docker image on GitHub.
 It pushes the image to Artifact Registry.

@@ -42,7 +42,7 @@ jobs:
           region: asia-south1
           image: asia-south1-docker.pkg.dev/project-4343c1b3-d768-4b8f-bff/talentbridge/talentbridge-backend:${{ github.sha }}
           flags: >-
-            --allow-unauthenticated
+            --service-account=talentbridge-runtime@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com
             --memory=1Gi
             --cpu=1
             --min=0

@@ -147,7 +147,7 @@ jobs:
           region: asia-south1
           image: asia-south1-docker.pkg.dev/project-4343c1b3-d768-4b8f-bff/talentbridge/talentbridge-backend:${{ github.sha }}
           flags: >-
-            --allow-unauthenticated
+            --service-account=talentbridge-runtime@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com
             --memory=1Gi
             --cpu=1
             --min=0
@@ -158,7 +158,7 @@ jobs:
             --cpu-throttling
 ```
 
-- [ ] **Step 3: Replace the Render deployment guide**
+- [ ] **Step 3: Replace the legacy deployment guide**
 
 Document Cloud Run, Artifact Registry, Workload Identity Federation, runtime variables, billing alerts, verification, and rollback.
 State that a budget sends alerts and does not enforce a spending cap.
@@ -241,24 +241,42 @@ gcloud iam service-accounts create github-cloud-run \
   --project=project-4343c1b3-d768-4b8f-bff
 ```
 
-Grant these project roles to the service account:
+Create a separate runtime service account:
 
 ```bash
-gcloud projects add-iam-policy-binding project-4343c1b3-d768-4b8f-bff \
-  --member=serviceAccount:github-cloud-run@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com \
-  --role=roles/artifactregistry.writer
+gcloud iam service-accounts create talentbridge-runtime \
+  --display-name="TalentBridge Cloud Run runtime" \
+  --project=project-4343c1b3-d768-4b8f-bff
+```
 
-gcloud projects add-iam-policy-binding project-4343c1b3-d768-4b8f-bff \
-  --member=serviceAccount:github-cloud-run@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com \
-  --role=roles/run.admin
+Grant the deployer write access only to the TalentBridge image repository:
 
-gcloud projects add-iam-policy-binding project-4343c1b3-d768-4b8f-bff \
+```bash
+gcloud artifacts repositories add-iam-policy-binding talentbridge \
+  --location=asia-south1 \
   --member=serviceAccount:github-cloud-run@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com \
-  --role=roles/iam.serviceAccountUser
+  --role=roles/artifactregistry.writer \
+  --project=project-4343c1b3-d768-4b8f-bff
+```
 
-gcloud projects add-iam-policy-binding project-4343c1b3-d768-4b8f-bff \
+Allow the deployer to act only as the runtime service account:
+
+```bash
+gcloud iam service-accounts add-iam-policy-binding \
+  talentbridge-runtime@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com \
   --member=serviceAccount:github-cloud-run@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com \
-  --role=roles/serviceusage.serviceUsageConsumer
+  --role=roles/iam.serviceAccountUser \
+  --project=project-4343c1b3-d768-4b8f-bff
+```
+
+After the Cloud Run service exists, grant deploy access only to that service:
+
+```bash
+gcloud run services add-iam-policy-binding talentbridge-backend \
+  --region=asia-south1 \
+  --member=serviceAccount:github-cloud-run@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com \
+  --role=roles/run.developer \
+  --project=project-4343c1b3-d768-4b8f-bff
 ```
 
 - [ ] **Step 4: Create Workload Identity Federation**
