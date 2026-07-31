@@ -112,9 +112,22 @@ public class OpenAIService {
                         "AI service is temporarily unavailable");
             }
             JsonNode json = mapper.readTree(response.body());
-            return json.path("choices").path(0).path("message").path("content").asText();
+            JsonNode content = json.path("choices").path(0).path("message").path("content");
+            if (!content.isTextual() || content.asText().isBlank()) {
+                throw new ResponseStatusException(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "AI service is temporarily unavailable");
+            }
+            return content.asText();
         } catch (ResponseStatusException e) {
             throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("OpenAI call interrupted");
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    "AI service is temporarily unavailable",
+                    e);
         } catch (Exception e) {
             log.error("OpenAI call failed", e);
             throw new ResponseStatusException(

@@ -82,6 +82,37 @@ class OpenAIServiceTest {
         assertFalse(error.getReason().contains("credential"));
     }
 
+    @Test
+    void rejectsSuccessfulResponseWithoutAssistantContent() {
+        server.createContext("/chat/completions", exchange -> respond(exchange, 200,
+                "{\"choices\":[]}"));
+        ChatRequest request = new ChatRequest();
+        request.setMessage("Hello");
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> service.chat(request));
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.getStatusCode());
+        assertEquals("AI service is temporarily unavailable", error.getReason());
+    }
+
+    @Test
+    void restoresThreadInterruptWhenRequestIsInterrupted() {
+        ChatRequest request = new ChatRequest();
+        request.setMessage("Hello");
+        Thread.currentThread().interrupt();
+
+        try {
+            ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                    () -> service.chat(request));
+
+            assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.getStatusCode());
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
     private void respond(HttpExchange exchange, int status, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
