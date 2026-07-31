@@ -63,6 +63,8 @@ Flyway applies database migrations during startup.
 | `JWT_SECRET` | Random JWT signing secret of at least 32 bytes |
 | `FRONTEND_URL` | Exact frontend origin allowed by CORS |
 | `OPENAI_API_KEY` | OpenAI API key used by chat and evaluation |
+| `N8N_AI_WEBHOOK_URL` | Optional authenticated n8n relay for chat and evaluation |
+| `N8N_WEBHOOK_SECRET` | Header Auth value for the n8n AI relay |
 | `GITHUB_CLIENT_ID` | GitHub OAuth App client ID |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret |
 | `GITHUB_REDIRECT_URI` | Registered GitHub OAuth callback URL |

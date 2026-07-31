@@ -1,5 +1,6 @@
 package com.talentbridge.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -14,6 +15,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -38,6 +40,8 @@ class OpenAIServiceTest {
         ReflectionTestUtils.setField(service, "evalModel", "gpt-4o-mini");
         ReflectionTestUtils.setField(service, "maxTokens", 256);
         ReflectionTestUtils.setField(service, "timeoutSeconds", 5);
+        ReflectionTestUtils.setField(service, "n8nWebhookUrl", "");
+        ReflectionTestUtils.setField(service, "n8nWebhookSecret", "");
     }
 
     @AfterEach
@@ -111,6 +115,119 @@ class OpenAIServiceTest {
         } finally {
             Thread.interrupted();
         }
+    }
+
+    @Test
+    void routesChatThroughAuthenticatedN8nWebhook() {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> secret = new AtomicReference<>();
+        AtomicReference<JsonNode> body = new AtomicReference<>();
+        server.createContext("/webhook/talentbridge-ai", exchange -> {
+            method.set(exchange.getRequestMethod());
+            secret.set(exchange.getRequestHeaders().getFirst("X-TalentBridge-Secret"));
+            body.set(new ObjectMapper().readTree(exchange.getRequestBody()));
+            respond(exchange, 200, "{\"message\":\"Relay reply\"}");
+        });
+        configureRelay("relay-secret");
+        ChatRequest request = new ChatRequest();
+        request.setMessage("Explain the scope");
+        request.setContext("STUDENT_PROJECT_INQUIRY");
+
+        String result = service.chat(request);
+
+        assertEquals("Relay reply", result);
+        assertEquals("POST", method.get());
+        assertEquals("relay-secret", secret.get());
+        assertEquals("chat", body.get().path("operation").asText());
+        assertEquals("gpt-4o-mini", body.get().path("model").asText());
+        assertEquals("Explain the scope", body.get().path("message").asText());
+        assertTrue(body.get().path("system").asText().contains("university student"));
+        assertTrue(body.get().path("history").isArray());
+        assertEquals(256, body.get().path("maxTokens").asInt());
+    }
+
+    @Test
+    void routesEvaluationThroughN8nWebhook() {
+        AtomicReference<JsonNode> body = new AtomicReference<>();
+        server.createContext("/webhook/talentbridge-ai", exchange -> {
+            body.set(new ObjectMapper().readTree(exchange.getRequestBody()));
+            respond(exchange, 200,
+                    "{\"message\":\"{\\\"totalScore\\\":88}\"}");
+        });
+        configureRelay("relay-secret");
+
+        String result = service.evaluateRepository(
+                "class Demo {}", "Build a demo", "Working code",
+                List.of("Student: 3 commits"));
+
+        assertEquals("{\"totalScore\":88}", result);
+        assertEquals("evaluation", body.get().path("operation").asText());
+        assertTrue(body.get().path("message").asText().contains("class Demo {}"));
+        assertTrue(body.get().path("history").isArray());
+        assertEquals(0, body.get().path("history").size());
+    }
+
+    @Test
+    void refusesRelayWithoutWebhookSecret() {
+        AtomicReference<Boolean> called = new AtomicReference<>(false);
+        server.createContext("/webhook/talentbridge-ai", exchange -> {
+            called.set(true);
+            respond(exchange, 200, "{\"message\":\"unexpected\"}");
+        });
+        configureRelay("");
+        ChatRequest request = new ChatRequest();
+        request.setMessage("Hello");
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> service.chat(request));
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.getStatusCode());
+        assertFalse(called.get());
+    }
+
+    @Test
+    void rejectsRelayResponseWithoutMessage() {
+        server.createContext("/webhook/talentbridge-ai",
+                exchange -> respond(exchange, 200, "{\"output\":\"wrong field\"}"));
+        configureRelay("relay-secret");
+        ChatRequest request = new ChatRequest();
+        request.setMessage("Hello");
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> service.chat(request));
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.getStatusCode());
+        assertEquals("AI service is temporarily unavailable", error.getReason());
+    }
+
+    @Test
+    void convertsRelayFailureWithoutDirectFallback() {
+        AtomicReference<Boolean> directCalled = new AtomicReference<>(false);
+        server.createContext("/webhook/talentbridge-ai",
+                exchange -> respond(exchange, 502,
+                        "{\"message\":\"private upstream detail\"}"));
+        server.createContext("/chat/completions", exchange -> {
+            directCalled.set(true);
+            respond(exchange, 200,
+                    "{\"choices\":[{\"message\":{\"content\":\"unexpected\"}}]}");
+        });
+        configureRelay("relay-secret");
+        ChatRequest request = new ChatRequest();
+        request.setMessage("Hello");
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> service.chat(request));
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.getStatusCode());
+        assertEquals("AI service is temporarily unavailable", error.getReason());
+        assertFalse(directCalled.get());
+    }
+
+    private void configureRelay(String secret) {
+        ReflectionTestUtils.setField(service, "n8nWebhookUrl",
+                "http://127.0.0.1:" + server.getAddress().getPort()
+                        + "/webhook/talentbridge-ai");
+        ReflectionTestUtils.setField(service, "n8nWebhookSecret", secret);
     }
 
     private void respond(HttpExchange exchange, int status, String body) throws IOException {

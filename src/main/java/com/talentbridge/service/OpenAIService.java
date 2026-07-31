@@ -29,6 +29,8 @@ public class OpenAIService {
     @Value("${openai.evaluation-model}") private String evalModel;
     @Value("${openai.max-tokens}") private int maxTokens;
     @Value("${openai.timeout-seconds}") private int timeoutSeconds;
+    @Value("${n8n.ai-webhook-url:}") private String n8nWebhookUrl;
+    @Value("${n8n.webhook-secret:}") private String n8nWebhookSecret;
 
     private final ObjectMapper mapper;
     private final HttpClient client = HttpClient.newBuilder()
@@ -36,7 +38,8 @@ public class OpenAIService {
             .build();
 
     public String chat(ChatRequest req) {
-        return call(chatModel, buildChatSystem(req.getContext()), req.getMessage(), req.getHistory(), maxTokens);
+        return call("chat", chatModel, buildChatSystem(req.getContext()),
+                req.getMessage(), req.getHistory(), maxTokens);
     }
 
     public String evaluateRepository(String repoContent, String scope, String deliverables,
@@ -66,7 +69,7 @@ public class OpenAIService {
                 deliverables != null ? deliverables : "Not specified",
                 String.join("\n", contributorStats),
                 repoContent);
-        return call(evalModel, system, user, null, 2048);
+        return call("evaluation", evalModel, system, user, null, 2048);
     }
 
     private String buildChatSystem(String context) {
@@ -84,57 +87,112 @@ public class OpenAIService {
             """;
     }
 
-    private String call(String model, String system, String userMessage,
+    private String call(String operation, String model, String system, String userMessage,
                         List<ChatRequest.ChatMessageDto> history, int maxTokens) {
         try {
-            ArrayNode messages = mapper.createArrayNode();
-            messages.add(message("system", system));
-            if (history != null) history.forEach(item -> messages.add(message(item.getRole(), item.getContent())));
-            messages.add(message("user", userMessage));
-
-            ObjectNode body = mapper.createObjectNode();
-            body.put("model", model);
-            body.set("messages", messages);
-            body.put("max_tokens", maxTokens);
-            body.put("temperature", 0.7);
-
-            HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/chat/completions"))
-                    .timeout(Duration.ofSeconds(timeoutSeconds))
-                    .header("Authorization", "Bearer " + apiKey)
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
-                    .build();
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                log.error("OpenAI request failed with status {}", response.statusCode());
-                throw new ResponseStatusException(
-                        HttpStatus.SERVICE_UNAVAILABLE,
-                        "AI service is temporarily unavailable");
+            if (!n8nWebhookUrl.isBlank()) {
+                return callN8n(operation, model, system, userMessage, history, maxTokens);
             }
-            JsonNode json = mapper.readTree(response.body());
-            JsonNode content = json.path("choices").path(0).path("message").path("content");
-            if (!content.isTextual() || content.asText().isBlank()) {
-                throw new ResponseStatusException(
-                        HttpStatus.SERVICE_UNAVAILABLE,
-                        "AI service is temporarily unavailable");
-            }
-            return content.asText();
+            return callOpenAI(model, system, userMessage, history, maxTokens);
         } catch (ResponseStatusException e) {
             throw e;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.warn("OpenAI call interrupted");
-            throw new ResponseStatusException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "AI service is temporarily unavailable",
-                    e);
+            log.warn("AI call interrupted");
+            throw unavailable(e);
         } catch (Exception e) {
-            log.error("OpenAI call failed", e);
-            throw new ResponseStatusException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "AI service is temporarily unavailable",
-                    e);
+            log.error("AI call failed", e);
+            throw unavailable(e);
         }
+    }
+
+    private String callOpenAI(String model, String system, String userMessage,
+                              List<ChatRequest.ChatMessageDto> history,
+                              int maxTokens) throws Exception {
+        ArrayNode messages = mapper.createArrayNode();
+        messages.add(message("system", system));
+        if (history != null) {
+            history.forEach(item -> messages.add(message(item.getRole(), item.getContent())));
+        }
+        messages.add(message("user", userMessage));
+
+        ObjectNode body = mapper.createObjectNode();
+        body.put("model", model);
+        body.set("messages", messages);
+        body.put("max_tokens", maxTokens);
+        body.put("temperature", 0.7);
+
+        HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/chat/completions"))
+                .timeout(Duration.ofSeconds(timeoutSeconds))
+                .header("Authorization", "Bearer " + apiKey)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
+                .build();
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            log.error("OpenAI request failed with status {}", response.statusCode());
+            throw unavailable();
+        }
+
+        JsonNode content = mapper.readTree(response.body())
+                .path("choices").path(0).path("message").path("content");
+        if (!content.isTextual() || content.asText().isBlank()) {
+            throw unavailable();
+        }
+        return content.asText();
+    }
+
+    private String callN8n(String operation, String model, String system, String userMessage,
+                           List<ChatRequest.ChatMessageDto> history,
+                           int maxTokens) throws Exception {
+        if (n8nWebhookSecret.isBlank()) {
+            log.error("n8n AI relay is configured without a webhook secret");
+            throw unavailable();
+        }
+
+        ArrayNode historyJson = mapper.createArrayNode();
+        if (history != null) {
+            history.forEach(item -> historyJson.add(message(item.getRole(), item.getContent())));
+        }
+
+        ObjectNode body = mapper.createObjectNode();
+        body.put("operation", operation);
+        body.put("model", model);
+        body.put("system", system);
+        body.put("message", userMessage);
+        body.set("history", historyJson);
+        body.put("maxTokens", maxTokens);
+
+        HttpRequest request = HttpRequest.newBuilder(URI.create(n8nWebhookUrl))
+                .timeout(Duration.ofSeconds(timeoutSeconds))
+                .header("X-TalentBridge-Secret", n8nWebhookSecret)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
+                .build();
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            log.error("n8n AI relay failed with status {}", response.statusCode());
+            throw unavailable();
+        }
+
+        JsonNode content = mapper.readTree(response.body()).path("message");
+        if (!content.isTextual() || content.asText().isBlank()) {
+            throw unavailable();
+        }
+        return content.asText();
+    }
+
+    private ResponseStatusException unavailable() {
+        return new ResponseStatusException(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "AI service is temporarily unavailable");
+    }
+
+    private ResponseStatusException unavailable(Exception cause) {
+        return new ResponseStatusException(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "AI service is temporarily unavailable",
+                cause);
     }
 
     private ObjectNode message(String role, String content) {
