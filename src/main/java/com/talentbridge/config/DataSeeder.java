@@ -4,20 +4,23 @@ import com.talentbridge.entity.User;
 import com.talentbridge.enums.UserRole;
 import com.talentbridge.enums.UserStatus;
 import com.talentbridge.repository.UserRepository;
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 @Component
 @RequiredArgsConstructor
 @Slf4j
-public class DataSeeder {
+public class DataSeeder implements ApplicationRunner {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final DemoDataSeeder demoDataSeeder;
 
     @Value("${app.seed.coordinator-email:coordinator@talentbridge.com}")
     private String coordinatorEmail;
@@ -28,21 +31,28 @@ public class DataSeeder {
     @Value("${app.demo-mode:false}")
     private boolean demoMode;
 
-    @PostConstruct
+    @Override
+    @Transactional
+    public void run(ApplicationArguments args) {
+        seed();
+    }
+
     public void seed() {
-        var existingCoordinator = userRepository.findByEmail(coordinatorEmail);
-        if (existingCoordinator.isPresent()) {
-            User coordinator = existingCoordinator.get();
-            if (demoMode && !passwordEncoder.matches(coordinatorPassword, coordinator.getPassword())) {
-                coordinator.setPassword(passwordEncoder.encode(coordinatorPassword));
-                userRepository.save(coordinator);
-                log.info("Demo coordinator password synchronized.");
-            } else {
-                log.info("Coordinator account already exists - skipping seed.");
-            }
-            return;
+        User coordinator = userRepository.findByEmail(coordinatorEmail)
+                .orElseGet(this::createCoordinator);
+
+        if (demoMode && !passwordEncoder.matches(coordinatorPassword, coordinator.getPassword())) {
+            coordinator.setPassword(passwordEncoder.encode(coordinatorPassword));
+            userRepository.save(coordinator);
+            log.info("Demo coordinator password synchronized.");
         }
 
+        if (demoMode) {
+            demoDataSeeder.seed(coordinator);
+        }
+    }
+
+    private User createCoordinator() {
         User coordinator = User.builder()
                 .email(coordinatorEmail)
                 .password(passwordEncoder.encode(coordinatorPassword))
@@ -55,5 +65,6 @@ public class DataSeeder {
 
         userRepository.save(coordinator);
         log.info("Default coordinator account created: {}", coordinatorEmail);
+        return coordinator;
     }
 }

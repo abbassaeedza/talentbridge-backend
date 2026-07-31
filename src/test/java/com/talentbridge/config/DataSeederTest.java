@@ -27,6 +27,7 @@ class DataSeederTest {
 
     @Mock private UserRepository userRepository;
     @Mock private PasswordEncoder passwordEncoder;
+    @Mock private DemoDataSeeder demoDataSeeder;
     @InjectMocks private DataSeeder seeder;
 
     private User coordinator;
@@ -67,5 +68,17 @@ class DataSeederTest {
 
         assertEquals("old-hash", coordinator.getPassword());
         verify(userRepository, never()).save(any());
+        verify(demoDataSeeder, never()).seed(any());
+    }
+
+    @Test
+    void seedsRepresentativeDataInDemoMode() {
+        ReflectionTestUtils.setField(seeder, "demoMode", true);
+        when(userRepository.findByEmail(coordinator.getEmail())).thenReturn(Optional.of(coordinator));
+        when(passwordEncoder.matches("new-demo-password", "old-hash")).thenReturn(true);
+
+        seeder.seed();
+
+        verify(demoDataSeeder).seed(coordinator);
     }
 }
