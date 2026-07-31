@@ -42,7 +42,7 @@ The real values must not be committed.
 TalentBridge sends an HTTP `POST` request with `Content-Type: application/json` and the configured authentication header.
 
 ```text
-X-TalentBridge-Secret: <configured secret>
+X-TB-Secret: <configured secret>
 ```
 
 The JSON body has this shape:
@@ -83,7 +83,7 @@ TalentBridge accepts only a nonblank textual `message` value.
 ## n8n Workflow
 
 The existing Webhook node uses `POST`, its production URL, and Header Auth.
-The Header Auth credential validates `X-TalentBridge-Secret` before workflow execution.
+The Header Auth credential validates `X-TB-Secret` before workflow execution.
 A Switch node routes on `operation` and rejects unknown values.
 Each route builds the OpenAI messages from `system`, `history`, and `message`, uses the provided `model` and `maxTokens`, and executes through the n8n OpenAI credential.
 Both routes normalize the assistant output to the common `message` response field.

@@ -124,7 +124,7 @@ class OpenAIServiceTest {
         AtomicReference<JsonNode> body = new AtomicReference<>();
         server.createContext("/webhook/talentbridge-ai", exchange -> {
             method.set(exchange.getRequestMethod());
-            secret.set(exchange.getRequestHeaders().getFirst("X-TalentBridge-Secret"));
+            secret.set(exchange.getRequestHeaders().getFirst("X-TB-Secret"));
             body.set(new ObjectMapper().readTree(exchange.getRequestBody()));
             respond(exchange, 200, "{\"message\":\"Relay reply\"}");
         });

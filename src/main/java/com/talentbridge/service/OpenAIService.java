@@ -165,7 +165,7 @@ public class OpenAIService {
 
         HttpRequest request = HttpRequest.newBuilder(URI.create(n8nWebhookUrl))
                 .timeout(Duration.ofSeconds(timeoutSeconds))
-                .header("X-TalentBridge-Secret", n8nWebhookSecret)
+                .header("X-TB-Secret", n8nWebhookSecret)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
                 .build();
