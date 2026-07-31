@@ -11,6 +11,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class AppPropertiesTest {
 
     @Test
+    void capsDatabaseConnectionsForOverlappingCloudRunRevisions() {
+        new ApplicationContextRunner()
+                .withInitializer(new ConfigDataApplicationContextInitializer())
+                .run(context -> {
+                    assertEquals("5", context.getEnvironment()
+                            .getProperty("spring.datasource.hikari.maximum-pool-size"));
+                    assertEquals("0", context.getEnvironment()
+                            .getProperty("spring.datasource.hikari.minimum-idle"));
+                });
+    }
+
+    @Test
     void bindsPartyLimitsFromEnvironment() {
         new ApplicationContextRunner()
                 .withInitializer(new ConfigDataApplicationContextInitializer())

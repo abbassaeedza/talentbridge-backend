@@ -89,6 +89,7 @@ Never expose backend secrets through Vite or Vercel variables.
 Use the Supabase Session pooler on port `5432`.
 Use the pooler username that includes the Supabase project reference.
 Set `DB_SSL_MODE=require`.
+The backend limits each instance to five database connections so two overlapping Cloud Run revisions remain below the free Session pooler limit.
 
 Flyway creates and updates the database schema during backend startup.
 
