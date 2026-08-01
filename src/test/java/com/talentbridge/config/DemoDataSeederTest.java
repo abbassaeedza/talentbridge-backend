@@ -31,7 +31,7 @@ import java.util.stream.StreamSupport;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -65,14 +65,17 @@ class DemoDataSeederTest {
     }
 
     @Test
-    void skipsDatasetWhenMarkerUserExists() {
+    void reconcilesGuardrailDataWhenTheDemoDatasetAlreadyExists() {
         when(userRepository.existsByEmail(DemoDataSeeder.MARKER_EMAIL)).thenReturn(true);
 
         seeder.seed(coordinator);
 
-        verify(userRepository, never()).saveAll(any());
-        verifyNoInteractions(studentProfileRepository, companyProfileRepository, projectRepository,
-                partyRepository, applicationRepository, submissionRepository, notificationRepository);
+        verify(userRepository).saveAll(argThat(users -> count(users) == 4));
+        verify(studentProfileRepository).saveAll(argThat(profiles -> count(profiles) == 4));
+        verify(partyRepository).findAll();
+        verify(partyRepository, times(0)).saveAll(any());
+        verifyNoInteractions(companyProfileRepository, projectRepository,
+                applicationRepository, submissionRepository, notificationRepository);
     }
 
     @Test
@@ -83,13 +86,13 @@ class DemoDataSeederTest {
 
         verify(userRepository).saveAll(argThat(users -> {
             var saved = StreamSupport.stream(users.spliterator(), false).toList();
-            return saved.size() == 11
+            return saved.size() == 15
                     && saved.stream().map(User::getStatus).collect(Collectors.toSet())
                     .equals(Set.of(UserStatus.PENDING, UserStatus.APPROVED,
                             UserStatus.REJECTED, UserStatus.SUSPENDED));
         }));
         verify(studentProfileRepository).saveAll(argThat(profiles ->
-                StreamSupport.stream(profiles.spliterator(), false).count() == 8));
+                StreamSupport.stream(profiles.spliterator(), false).count() == 12));
         verify(companyProfileRepository).save(any());
         verify(projectRepository).saveAll(argThat(projects -> {
             var statuses = StreamSupport.stream(projects.spliterator(), false)
@@ -100,11 +103,17 @@ class DemoDataSeederTest {
                     ProjectStatus.ARCHIVED));
         }));
         verify(partyRepository).saveAll(argThat(parties -> {
-            var statuses = StreamSupport.stream(parties.spliterator(), false)
+            var saved = StreamSupport.stream(parties.spliterator(), false).toList();
+            var statuses = saved.stream()
                     .map(Party::getStatus)
                     .collect(Collectors.toSet());
             return statuses.equals(Set.of(PartyStatus.FORMING, PartyStatus.ACTIVE,
-                    PartyStatus.ASSIGNED, PartyStatus.SUBMITTED, PartyStatus.COMPLETED));
+                    PartyStatus.ASSIGNED, PartyStatus.SUBMITTED, PartyStatus.COMPLETED))
+                    && saved.stream().allMatch(p -> p.getMembers().size() <= 3)
+                    && saved.stream()
+                    .filter(p -> p.getStatus() != PartyStatus.FORMING)
+                    .allMatch(p -> p.getMembers().size() >= 2)
+                    && saved.stream().filter(p -> p.getSupervisor() != null).count() <= 2;
         }));
         verify(applicationRepository).saveAll(argThat(items -> count(items) == 3));
         verify(submissionRepository).saveAll(argThat(items -> count(items) == 2));

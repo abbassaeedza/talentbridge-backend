@@ -51,6 +51,11 @@ public class PartyController {
         return partyService.getMyParty(userId);
     }
 
+    @GetMapping("/rules")
+    public Map<String, Integer> getRules() {
+        return partyService.getRules();
+    }
+
     @GetMapping("/{partyId}")
     public PartyResponse getById(@PathVariable UUID partyId) {
         return partyService.getById(partyId);
@@ -84,9 +89,11 @@ public class PartyController {
     }
 
     @GetMapping("/projects/{projectId}/applications")
-    @PreAuthorize("hasRole('COORDINATOR')")
-    public List<ApplicationResponse> getApplicationsByProject(@PathVariable UUID projectId) {
-        return partyService.getApplicationsByProject(projectId);
+    @PreAuthorize("hasAnyRole('COORDINATOR','COMPANY','PROJECT_SUPERVISOR')")
+    public List<ApplicationResponse> getApplicationsByProject(
+            @PathVariable UUID projectId,
+            @AuthenticationPrincipal UUID viewerId) {
+        return partyService.getApplicationsByProject(projectId, viewerId);
     }
 
     @PutMapping("/{partyId}/leader")
@@ -106,6 +113,14 @@ public class PartyController {
             @RequestBody(required = false) AssignSupervisorRequest req) {
         UUID resolvedSupervisorId = supervisorId != null ? supervisorId : (req != null ? req.getSupervisorId() : null);
         return partyService.assignSupervisor(partyId, resolvedSupervisorId);
+    }
+
+    @PutMapping("/{partyId}/claim-supervisor")
+    @PreAuthorize("hasRole('PARTY_SUPERVISOR')")
+    public PartyResponse claimSupervisor(
+            @PathVariable UUID partyId,
+            @AuthenticationPrincipal UUID supervisorId) {
+        return partyService.claimSupervisor(partyId, supervisorId);
     }
 
     @PutMapping("/{partyId}/name")

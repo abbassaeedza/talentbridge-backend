@@ -46,6 +46,13 @@ public class ProjectController {
         return projectService.getAll(page, size, status);
     }
 
+    @GetMapping("/global-deadline")
+    public ResponseEntity<LocalDateTime> getGlobalDeadline() {
+        return projectService.getGlobalDeadline()
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.noContent().build());
+    }
+
     @GetMapping("/{id}")
     public ProjectResponse getById(@PathVariable UUID id) {
         return projectService.getById(id);

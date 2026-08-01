@@ -1,5 +1,6 @@
 package com.talentbridge.dto.response;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.talentbridge.enums.UserRole;
 import com.talentbridge.enums.UserStatus;
 import lombok.*;
@@ -24,6 +25,10 @@ public class UserResponse {
     private LocalDateTime createdAt;
     private StudentProfileDto studentProfile;
     private CompanyProfileDto companyProfile;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private Long suspensionCount;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private Long rejectionCount;
 
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class StudentProfileDto {

@@ -31,7 +31,6 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.stream.Stream;
 
 @Component
@@ -52,7 +51,8 @@ public class DemoDataSeeder {
 
     public void seed(User coordinator) {
         if (userRepository.existsByEmail(MARKER_EMAIL)) {
-            log.info("Representative demo data already exists - skipping seed.");
+            reconcileGuardrailData(coordinator.getPassword());
+            log.info("Representative demo data already exists - guardrail data reconciled.");
             return;
         }
 
@@ -69,6 +69,10 @@ public class DemoDataSeeder {
                 user("carol.student@talentbridge.com", "Carol", "Iqbal", UserRole.STUDENT, UserStatus.APPROVED, password),
                 user("dan.student@talentbridge.com", "Dan", "Malik", UserRole.STUDENT, UserStatus.APPROVED, password),
                 user("erin.student@talentbridge.com", "Erin", "Shah", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("farah.student@talentbridge.com", "Farah", "Noor", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("gibran.student@talentbridge.com", "Gibran", "Saeed", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("hana.student@talentbridge.com", "Hana", "Yusuf", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("imran.student@talentbridge.com", "Imran", "Qureshi", UserRole.STUDENT, UserStatus.APPROVED, password),
                 user("pending.student@talentbridge.com", "Pending", "Student", UserRole.STUDENT, UserStatus.PENDING, password),
                 user("rejected.student@talentbridge.com", "Rejected", "Student", UserRole.STUDENT, UserStatus.REJECTED, password),
                 user("suspended.student@talentbridge.com", "Suspended", "Student", UserRole.STUDENT, UserStatus.SUSPENDED, password));
@@ -167,30 +171,75 @@ public class DemoDataSeeder {
     private List<Party> buildParties(List<User> students, User supervisor,
                                      List<Project> projects) {
         return List.of(
-                party("Team Alpha Demo", students.get(0), supervisor,
+                party("Team Alpha Demo", List.of(students.get(0), students.get(5)), supervisor,
                         PartyStatus.ASSIGNED, projects.get(2)),
-                party("Team Beta Demo", students.get(1), supervisor,
+                party("Team Beta Demo", List.of(students.get(1), students.get(6)), supervisor,
                         PartyStatus.SUBMITTED, projects.get(4)),
-                party("Team Gamma Demo", students.get(2), supervisor,
+                party("Team Gamma Demo", List.of(students.get(2), students.get(7)), null,
                         PartyStatus.ACTIVE, null),
-                party("Team Delta Demo", students.get(3), null,
+                party("Team Delta Demo", List.of(students.get(3)), null,
                         PartyStatus.FORMING, null),
-                party("Team Epsilon Demo", students.get(4), supervisor,
+                party("Team Epsilon Demo", List.of(students.get(4), students.get(8)), null,
                         PartyStatus.COMPLETED, null));
     }
 
-    private Party party(String name, User leader, User supervisor, PartyStatus status,
+    private Party party(String name, List<User> members, User supervisor, PartyStatus status,
                         Project project) {
         return Party.builder()
                 .name(name)
-                .leader(leader)
-                .members(new HashSet<>(Set.of(leader)))
+                .leader(members.get(0))
+                .members(new HashSet<>(members))
                 .supervisor(supervisor)
                 .status(status)
                 .semester("Fall")
                 .academicYear(2026)
                 .assignedProject(project)
                 .build();
+    }
+
+    private void reconcileGuardrailData(String password) {
+        List<User> supplemental = ensureSupplementalStudents(password);
+        var parties = partyRepository.findAll();
+        var byName = parties.stream().collect(java.util.stream.Collectors.toMap(Party::getName, p -> p));
+
+        addMember(byName.get("Team Alpha Demo"), supplemental.get(0));
+        addMember(byName.get("Team Beta Demo"), supplemental.get(1));
+        addMember(byName.get("Team Gamma Demo"), supplemental.get(2));
+        addMember(byName.get("Team Epsilon Demo"), supplemental.get(3));
+
+        Party gamma = byName.get("Team Gamma Demo");
+        Party epsilon = byName.get("Team Epsilon Demo");
+        if (gamma != null) gamma.setSupervisor(null);
+        if (epsilon != null) epsilon.setSupervisor(null);
+        if (!parties.isEmpty()) partyRepository.saveAll(parties);
+    }
+
+    private List<User> ensureSupplementalStudents(String password) {
+        String[][] data = {
+                {"farah.student@talentbridge.com", "Farah", "Noor"},
+                {"gibran.student@talentbridge.com", "Gibran", "Saeed"},
+                {"hana.student@talentbridge.com", "Hana", "Yusuf"},
+                {"imran.student@talentbridge.com", "Imran", "Qureshi"}
+        };
+        List<User> students = new ArrayList<>();
+        List<User> created = new ArrayList<>();
+        for (String[] item : data) {
+            User student = userRepository.findByEmail(item[0]).orElseGet(() -> {
+                User value = user(item[0], item[1], item[2], UserRole.STUDENT, UserStatus.APPROVED, password);
+                created.add(value);
+                return value;
+            });
+            students.add(student);
+        }
+        if (!created.isEmpty()) {
+            userRepository.saveAll(created);
+            studentProfileRepository.saveAll(created.stream().map(this::studentProfile).toList());
+        }
+        return students;
+    }
+
+    private void addMember(Party party, User student) {
+        if (party != null && party.getMembers().size() < 3) party.getMembers().add(student);
     }
 
     private List<Application> buildApplications(List<Party> parties, List<Project> projects) {

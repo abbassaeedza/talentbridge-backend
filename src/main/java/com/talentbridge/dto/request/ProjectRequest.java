@@ -1,6 +1,7 @@
 package com.talentbridge.dto.request;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -9,20 +10,20 @@ import java.util.UUID;
 
 @Data
 public class ProjectRequest {
-    @NotBlank
+    @NotBlank @Size(max = 100)
     private String title;
 
-    @NotBlank
+    @NotBlank @Size(max = 2000)
     private String description;
 
-    private String scope;
-    private String deliverables;
-    private String evaluationCriteria;
-    private List<String> tools;
+    @Size(max = 2000) private String scope;
+    @Size(max = 2000) private String deliverables;
+    @Size(max = 2000) private String evaluationCriteria;
+    @Size(max = 20) private List<@Size(max = 100) String> tools;
     private LocalDateTime deadline;
     private UUID projectSupervisorId;
-    private String projectField;
+    @Size(max = 100) private String projectField;
 
     // Company-only internal reference name — not shown to students
-    private String internalName;
+    @Size(max = 100) private String internalName;
 }

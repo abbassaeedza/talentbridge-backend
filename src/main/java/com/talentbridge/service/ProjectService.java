@@ -1,5 +1,6 @@
 package com.talentbridge.service;
 
+import com.talentbridge.config.AppProperties;
 import com.talentbridge.dto.request.ProjectRequest;
 import com.talentbridge.dto.response.PageResponse;
 import com.talentbridge.dto.response.ProjectResponse;
@@ -25,6 +26,8 @@ public class ProjectService {
     private final PartyRepository partyRepository;
     private final ApplicationRepository applicationRepository;
     private final NotificationService notificationService;
+    private final ApplicationSettingsRepository applicationSettingsRepository;
+    private final AppProperties appProperties;
 
     @Transactional
     public ProjectResponse create(UUID creatorId, ProjectRequest req) {
@@ -85,7 +88,10 @@ public class ProjectService {
         Project project = getOrThrow(projectId);
         if (!project.getCreatedBy().getId().equals(userId))
             throw new ForbiddenException("You can only edit your own projects");
-        project.setInternalName(internalName != null ? internalName.trim() : null);
+        String value = internalName == null || internalName.isBlank() ? null : internalName.trim();
+        if (value != null && value.length() > 100)
+            throw new BadRequestException("Internal name must be 100 characters or fewer");
+        project.setInternalName(value);
         return toResponse(projectRepository.save(project));
     }
 
@@ -152,9 +158,19 @@ public class ProjectService {
 
     @Transactional
     public void setGlobalDeadline(LocalDateTime deadline) {
+        ApplicationSettings settings = applicationSettingsRepository.findById(ApplicationSettings.ID)
+                .orElseGet(ApplicationSettings::new);
+        settings.setGlobalDeadline(deadline);
+        applicationSettingsRepository.save(settings);
+
         List<Project> open = projectRepository.findByStatus(ProjectStatus.OPEN, Pageable.unpaged()).getContent();
         open.forEach(p -> p.setDeadline(deadline));
         projectRepository.saveAll(open);
+    }
+
+    public Optional<LocalDateTime> getGlobalDeadline() {
+        return applicationSettingsRepository.findById(ApplicationSettings.ID)
+                .map(ApplicationSettings::getGlobalDeadline);
     }
 
     @Transactional
@@ -163,10 +179,13 @@ public class ProjectService {
         Party party = partyRepository.findById(partyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Party", partyId.toString()));
 
-        if (project.getStatus() == ProjectStatus.ASSIGNED)
-            throw new BadRequestException("Project already assigned");
+        if (project.getStatus() != ProjectStatus.OPEN)
+            throw new BadRequestException("Only open projects can be assigned");
         if (party.getAssignedProject() != null)
             throw new BadRequestException("Party already has a project");
+        if (party.getMembers().size() < appProperties.getParty().getMinSize())
+            throw new BadRequestException("Party needs minimum "
+                    + appProperties.getParty().getMinSize() + " members");
 
         applicationRepository.findByPartyIdAndProjectId(partyId, projectId).ifPresent(app -> {
             app.setStatus(ApplicationStatus.ASSIGNED);

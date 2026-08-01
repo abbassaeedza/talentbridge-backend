@@ -5,6 +5,7 @@ import com.talentbridge.dto.response.PageResponse;
 import com.talentbridge.dto.response.UserResponse;
 import com.talentbridge.entity.*;
 import com.talentbridge.enums.NotificationType;
+import com.talentbridge.enums.ModerationEventType;
 import com.talentbridge.enums.UserRole;
 import com.talentbridge.enums.UserStatus;
 import com.talentbridge.exception.*;
@@ -23,11 +24,35 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final StudentProfileRepository studentProfileRepository;
+    private final ScorecardRepository scorecardRepository;
+    private final UserModerationEventRepository moderationEventRepository;
+    private final PartyRepository partyRepository;
+    private final ApplicationRepository applicationRepository;
     private final NotificationService notificationService;
 
     public User getById(UUID id) {
         return userRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("User", id.toString()));
+    }
+
+    public UserResponse getStudentProfile(UUID studentId, UUID viewerId) {
+        User viewer = getById(viewerId);
+        User student = getById(studentId);
+        if (student.getRole() != UserRole.STUDENT)
+            throw new BadRequestException("User is not a student");
+        if (viewer.getRole() == UserRole.COORDINATOR)
+            return toCoordinatorResponse(student);
+        if (student.getStatus() != UserStatus.APPROVED)
+            throw new ForbiddenException("This student profile is not available");
+        boolean allowed = switch (viewer.getRole()) {
+            case COMPANY -> applicationRepository.existsForCompanyAndStudent(viewerId, studentId);
+            case PARTY_SUPERVISOR -> partyRepository.existsByMemberId(studentId);
+            case PROJECT_SUPERVISOR -> partyRepository.existsByStudentAndProjectSupervisor(studentId, viewerId);
+            default -> false;
+        };
+        if (!allowed)
+            throw new ForbiddenException("Student profiles are not available for this role");
+        return toResponse(student);
     }
 
     @Transactional
@@ -50,36 +75,49 @@ public class UserService {
 
     @Transactional
     public UserResponse approveUser(UUID userId, UUID coordinatorId) {
-        User user = getById(userId);
+        User user = getByIdForUpdate(userId);
         user.setStatus(UserStatus.APPROVED);
         user.setRejectionReason(null);
         user = userRepository.save(user);
         notificationService.notifyUserApproved(user);
-        return toResponse(user);
+        return toCoordinatorResponse(user);
     }
 
     @Transactional
-    public UserResponse rejectUser(UUID userId, String reason) {
-        User user = getById(userId);
+    public UserResponse rejectUser(UUID userId, String reason, UUID coordinatorId) {
+        User user = getByIdForUpdate(userId);
+        if (user.getStatus() != UserStatus.REJECTED)
+            recordModerationEvent(user, ModerationEventType.REJECTED, coordinatorId);
         user.setStatus(UserStatus.REJECTED);
         user.setRejectionReason(reason);
         user = userRepository.save(user);
         notificationService.notifyUserRejected(user);
-        return toResponse(user);
+        return toCoordinatorResponse(user);
     }
 
     @Transactional
-    public UserResponse suspendUser(UUID userId) {
-        User user = getById(userId);
+    public UserResponse suspendUser(UUID userId, UUID coordinatorId) {
+        User user = getByIdForUpdate(userId);
+        if (user.getStatus() != UserStatus.SUSPENDED)
+            recordModerationEvent(user, ModerationEventType.SUSPENDED, coordinatorId);
         user.setStatus(UserStatus.SUSPENDED);
-        return toResponse(userRepository.save(user));
+        return toCoordinatorResponse(userRepository.save(user));
     }
 
     @Transactional
     public UserResponse unsuspendUser(UUID userId) {
-        User user = getById(userId);
+        User user = getByIdForUpdate(userId);
         user.setStatus(UserStatus.APPROVED);
-        return toResponse(userRepository.save(user));
+        return toCoordinatorResponse(userRepository.save(user));
+    }
+
+    @Transactional
+    public void deleteRejectedUser(UUID userId) {
+        User user = getById(userId);
+        if (user.getStatus() != UserStatus.REJECTED)
+            throw new BadRequestException("Only rejected users can be deleted");
+        scorecardRepository.findByStudentId(userId).ifPresent(scorecardRepository::delete);
+        userRepository.delete(user);
     }
 
     public PageResponse<UserResponse> getPendingUsers(int page, int size) {
@@ -104,8 +142,14 @@ public class UserService {
                 .toList();
     }
 
-    public List<UserResponse> getSupervisors() {
-        return userRepository.findByRoleIn(List.of(UserRole.PARTY_SUPERVISOR, UserRole.PROJECT_SUPERVISOR))
+    public List<UserResponse> getSupervisors(UUID viewerId) {
+        User viewer = getById(viewerId);
+        List<User> supervisors = viewer.getRole() == UserRole.COORDINATOR
+                ? userRepository.findByRoleIn(List.of(UserRole.PARTY_SUPERVISOR, UserRole.PROJECT_SUPERVISOR))
+                : userRepository.findByRoleInAndStatus(
+                        List.of(UserRole.PARTY_SUPERVISOR, UserRole.PROJECT_SUPERVISOR),
+                        UserStatus.APPROVED);
+        return supervisors
                 .stream()
                 .map(this::toResponse)
                 .toList();
@@ -187,5 +231,32 @@ public class UserService {
                         .city(company.getCity())
                         .build())
                 .build();
+    }
+
+    private UserResponse toCoordinatorResponse(User user) {
+        UserResponse response = toResponse(user);
+        String email = normalizeEmail(user.getEmail());
+        response.setSuspensionCount(moderationEventRepository
+                .countByNormalizedEmailAndEventType(email, ModerationEventType.SUSPENDED));
+        response.setRejectionCount(moderationEventRepository
+                .countByNormalizedEmailAndEventType(email, ModerationEventType.REJECTED));
+        return response;
+    }
+
+    private void recordModerationEvent(User user, ModerationEventType type, UUID coordinatorId) {
+        moderationEventRepository.save(UserModerationEvent.builder()
+                .normalizedEmail(normalizeEmail(user.getEmail()))
+                .eventType(type)
+                .coordinatorId(coordinatorId)
+                .build());
+    }
+
+    private String normalizeEmail(String email) {
+        return email.trim().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private User getByIdForUpdate(UUID id) {
+        return userRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new ResourceNotFoundException("User", id.toString()));
     }
 }

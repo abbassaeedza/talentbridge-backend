@@ -28,11 +28,16 @@ class AppPropertiesTest {
                 .withInitializer(new ConfigDataApplicationContextInitializer())
                 .withConfiguration(AutoConfigurations.of(ConfigurationPropertiesAutoConfiguration.class))
                 .withUserConfiguration(AppProperties.class)
-                .withSystemProperties("PARTY_MIN_SIZE=4", "PARTY_MAX_SIZE=6")
+                .withSystemProperties(
+                        "PARTY_MIN_SIZE=4",
+                        "PARTY_MAX_SIZE=6",
+                        "PARTY_SUPERVISOR_MAX_PARTIES=5")
                 .run(context -> {
                     AppProperties properties = context.getBean(AppProperties.class);
                     assertEquals(4, properties.getParty().getMinSize());
                     assertEquals(6, properties.getParty().getMaxSize());
+                    assertEquals("5", context.getEnvironment()
+                            .getProperty("app.party.supervisor-max-parties"));
                 });
     }
 }

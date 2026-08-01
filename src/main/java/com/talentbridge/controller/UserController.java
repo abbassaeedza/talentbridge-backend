@@ -49,6 +49,14 @@ public class UserController {
         return scorecardService.getByStudentId(userId);
     }
 
+    @GetMapping("/{userId}")
+    @PreAuthorize("hasAnyRole('COORDINATOR','COMPANY','PARTY_SUPERVISOR','PROJECT_SUPERVISOR')")
+    public UserResponse getStudentProfile(
+            @PathVariable UUID userId,
+            @AuthenticationPrincipal UUID viewerId) {
+        return userService.getStudentProfile(userId, viewerId);
+    }
+
     @GetMapping("/pending")
     @PreAuthorize("hasRole('COORDINATOR')")
     public PageResponse<UserResponse> getPending(
@@ -71,19 +79,28 @@ public class UserController {
             @PathVariable UUID userId,
             @RequestParam(required = false) String reason,
             @AuthenticationPrincipal UUID coordinatorId) {
-        return userService.rejectUser(userId, reason);
+        return userService.rejectUser(userId, reason, coordinatorId);
     }
 
     @PutMapping("/{userId}/suspend")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public UserResponse suspend(@PathVariable UUID userId) {
-        return userService.suspendUser(userId);
+    public UserResponse suspend(
+            @PathVariable UUID userId,
+            @AuthenticationPrincipal UUID coordinatorId) {
+        return userService.suspendUser(userId, coordinatorId);
     }
 
     @PutMapping("/{userId}/unsuspend")
     @PreAuthorize("hasRole('COORDINATOR')")
     public UserResponse unsuspend(@PathVariable UUID userId) {
         return userService.unsuspendUser(userId);
+    }
+
+    @DeleteMapping("/{userId}")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public ResponseEntity<Void> deleteRejected(@PathVariable UUID userId) {
+        userService.deleteRejectedUser(userId);
+        return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/students")
@@ -100,8 +117,8 @@ public class UserController {
 
     @GetMapping("/supervisors")
     @PreAuthorize("hasAnyRole('COORDINATOR','STUDENT')")
-    public java.util.List<UserResponse> getSupervisors() {
-        return userService.getSupervisors();
+    public java.util.List<UserResponse> getSupervisors(@AuthenticationPrincipal UUID viewerId) {
+        return userService.getSupervisors(viewerId);
     }
 
     @GetMapping("/coordinators")

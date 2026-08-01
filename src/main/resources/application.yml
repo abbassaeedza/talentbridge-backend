@@ -78,6 +78,7 @@ app:
   party:
     min-size: ${PARTY_MIN_SIZE:2}
     max-size: ${PARTY_MAX_SIZE:3}
+    supervisor-max-parties: ${PARTY_SUPERVISOR_MAX_PARTIES:2}
 
 logging:
   level:

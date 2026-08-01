@@ -27,6 +27,7 @@ public class PartyService {
     private final UserRepository userRepository;
     private final ProjectRepository projectRepository;
     private final ApplicationRepository applicationRepository;
+    private final SubmissionRepository submissionRepository;
     private final NotificationService notificationService;
     private final AppProperties appProperties;
 
@@ -48,8 +49,7 @@ public class PartyService {
 
     @Transactional
     public PartyResponse join(UUID partyId, UUID studentId) {
-        Party party = getPartyOrThrow(partyId);
-        User student = getUser(studentId);
+        Party party = getPartyForUpdate(partyId);
         int maxSize = appProperties.getParty().getMaxSize();
 
         if (party.getMembers().size() >= maxSize)
@@ -58,6 +58,7 @@ public class PartyService {
             throw new BadRequestException("Party is no longer open for new members");
         if (partyRepository.findByMemberId(studentId).isPresent())
             throw new BadRequestException("You are already in a party");
+        User student = getUser(studentId);
 
         party.getMembers().add(student);
         if (party.getMembers().size() >= appProperties.getParty().getMinSize())
@@ -81,7 +82,7 @@ public class PartyService {
 
     @Transactional
     public PartyResponse changeLeader(UUID partyId, UUID currentLeaderId, UUID newLeaderId) {
-        Party party = getPartyOrThrow(partyId);
+        Party party = getPartyForUpdate(partyId);
 
         if (!party.getLeader().getId().equals(currentLeaderId))
             throw new ForbiddenException("Only the current leader can transfer leadership");
@@ -104,10 +105,10 @@ public class PartyService {
 
     @Transactional
     public ApplicationResponse applyToProject(UUID partyId, UUID leaderId, ApplicationRequest req) {
-        Party party = getPartyOrThrow(partyId);
+        Party party = getPartyForUpdate(partyId);
         if (!party.getLeader().getId().equals(leaderId))
             throw new ForbiddenException("Only party leader can apply");
-        if (party.getStatus() == PartyStatus.FORMING)
+        if (party.getMembers().size() < appProperties.getParty().getMinSize())
             throw new BadRequestException("Party needs minimum " + appProperties.getParty().getMinSize() + " members");
         if (party.getAssignedProject() != null)
             throw new BadRequestException("Party already has an assigned project");
@@ -138,17 +139,36 @@ public class PartyService {
     @Transactional
     public PartyResponse assignSupervisor(UUID partyId, UUID supervisorId) {
         if (supervisorId == null) throw new BadRequestException("Supervisor is required");
-        Party party = getPartyOrThrow(partyId);
-        User supervisor = getUser(supervisorId);
+        Party party = getPartyForUpdate(partyId);
+        User supervisor = getUserForUpdate(supervisorId);
+
+        return setSupervisor(partyId, party, supervisor);
+    }
+
+    @Transactional
+    public PartyResponse claimSupervisor(UUID partyId, UUID supervisorId) {
+        Party party = getPartyForUpdate(partyId);
+        if (party.getSupervisor() != null)
+            throw new BadRequestException("Party already has a supervisor");
+        return setSupervisor(partyId, party, getUserForUpdate(supervisorId));
+    }
+
+    private PartyResponse setSupervisor(UUID partyId, Party party, User supervisor) {
+        UUID supervisorId = supervisor.getId();
 
         if (supervisor.getRole() != UserRole.PARTY_SUPERVISOR)
             throw new BadRequestException("User is not a party supervisor");
-        if (party.getSemester() != null) {
-            long sameCount = partyRepository.countBySupervisorAndSemester(supervisorId, party.getSemester());
-            if (sameCount >= 2) throw new BadRequestException("Supervisor already has 2 parties this semester");
-        }
-        long total = partyRepository.findBySupervisorId(supervisorId).size();
-        if (total >= 4) throw new BadRequestException("Supervisor has reached max capacity (4 parties)");
+        if (party.getSupervisor() != null && party.getSupervisor().getId().equals(supervisorId))
+            return toResponse(party);
+        if (party.getSemester() == null || party.getAcademicYear() == null)
+            throw new BadRequestException("Party semester and academic year are required");
+
+        int maxParties = appProperties.getParty().getSupervisorMaxParties();
+        long assignedCount = partyRepository
+                .countBySupervisorIdAndSemesterAndAcademicYearAndIdNot(
+                        supervisorId, party.getSemester(), party.getAcademicYear(), partyId);
+        if (assignedCount >= maxParties)
+            throw new BadRequestException("Supervisor already has " + maxParties + " parties this academic term");
 
         party.setSupervisor(supervisor);
         return toResponse(partyRepository.save(party));
@@ -157,6 +177,7 @@ public class PartyService {
     @Transactional
     public PartyResponse renameParty(UUID partyId, String name) {
         if (name == null || name.isBlank()) throw new BadRequestException("Party name is required");
+        if (name.trim().length() > 100) throw new BadRequestException("Party name must be 100 characters or fewer");
         Party party = getPartyOrThrow(partyId);
         party.setName(name.trim());
         return toResponse(partyRepository.save(party));
@@ -202,14 +223,15 @@ public class PartyService {
 
     @Transactional
     public PartyResponse unassignProject(UUID partyId) {
-        Party party = getPartyOrThrow(partyId);
+        Party party = getPartyForUpdate(partyId);
         Project project = party.getAssignedProject();
         if (project == null) throw new BadRequestException("Party does not have an assigned project");
+        if (submissionRepository.findByPartyId(partyId).isPresent())
+            throw new BadRequestException("A party with a submission cannot be unassigned");
 
-        applicationRepository.findByPartyIdAndProjectId(partyId, project.getId()).ifPresent(app -> {
-            app.setStatus(ApplicationStatus.PENDING);
-            applicationRepository.save(app);
-        });
+        applicationRepository.findByProjectIdAndStatusIn(project.getId(),
+                        List.of(ApplicationStatus.ASSIGNED, ApplicationStatus.REASSIGNED))
+                .forEach(app -> app.setStatus(ApplicationStatus.PENDING));
 
         project.setStatus(ProjectStatus.OPEN);
         party.setAssignedProject(null);
@@ -236,8 +258,19 @@ public class PartyService {
         return partyRepository.findAll().stream().map(this::toResponse).collect(Collectors.toList());
     }
 
+    public Map<String, Integer> getRules() {
+        return Map.of(
+                "minSize", appProperties.getParty().getMinSize(),
+                "maxSize", appProperties.getParty().getMaxSize(),
+                "supervisorMaxParties", appProperties.getParty().getSupervisorMaxParties());
+    }
+
     public List<PartyResponse> getSupervised(UUID supervisorId) {
-        return partyRepository.findBySupervisorId(supervisorId)
+        User supervisor = getUser(supervisorId);
+        List<Party> parties = supervisor.getRole() == UserRole.PROJECT_SUPERVISOR
+                ? partyRepository.findByProjectSupervisorId(supervisorId)
+                : partyRepository.findBySupervisorId(supervisorId);
+        return parties
                 .stream().map(this::toResponse).collect(Collectors.toList());
     }
 
@@ -246,8 +279,18 @@ public class PartyService {
                 .stream().map(this::toApplicationResponse).collect(Collectors.toList());
     }
 
-    public List<ApplicationResponse> getApplicationsByProject(UUID projectId) {
-        return applicationRepository.findByProjectIdAndStatus(projectId, ApplicationStatus.PENDING)
+    public List<ApplicationResponse> getApplicationsByProject(UUID projectId, UUID viewerId) {
+        Project project = projectRepository.findById(projectId)
+                .orElseThrow(() -> new ResourceNotFoundException("Project", projectId.toString()));
+        User viewer = getUser(viewerId);
+        boolean allowed = viewer.getRole() == UserRole.COORDINATOR
+                || (viewer.getRole() == UserRole.COMPANY
+                && project.getCreatedBy().getId().equals(viewerId))
+                || (viewer.getRole() == UserRole.PROJECT_SUPERVISOR
+                && project.getProjectSupervisor() != null
+                && project.getProjectSupervisor().getId().equals(viewerId));
+        if (!allowed) throw new ForbiddenException("You cannot view applications for this project");
+        return applicationRepository.findByProjectIdOrderByCreatedAtAsc(projectId)
                 .stream().map(this::toApplicationResponse).collect(Collectors.toList());
     }
 
@@ -256,8 +299,18 @@ public class PartyService {
                 .orElseThrow(() -> new ResourceNotFoundException("Party", id.toString()));
     }
 
+    private Party getPartyForUpdate(UUID id) {
+        return partyRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Party", id.toString()));
+    }
+
     private User getUser(UUID id) {
         return userRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("User", id.toString()));
+    }
+
+    private User getUserForUpdate(UUID id) {
+        return userRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("User", id.toString()));
     }
 

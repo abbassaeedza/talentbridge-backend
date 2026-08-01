@@ -44,6 +44,10 @@ public class SubmissionService {
     public Submission finalSubmit(UUID partyId, UUID leaderId) {
         Party party = getParty(partyId);
         assertLeader(party, leaderId);
+        Project project = party.getAssignedProject();
+        if (project == null) throw new BadRequestException("Party has no assigned project");
+        if (project.getDeadline() != null && !project.getDeadline().isAfter(LocalDateTime.now()))
+            throw new BadRequestException("The project deadline has expired");
         Submission sub = submissionRepository.findByPartyId(partyId)
             .orElseThrow(() -> new BadRequestException("No draft found. Save your submission first."));
         if (sub.getRepoUrl() == null || sub.getRepoUrl().isBlank())

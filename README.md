@@ -80,6 +80,7 @@ Flyway applies database migrations during startup.
 | `APP_SEED_COORDINATOR_PASSWORD` | Coordinator password used by the data seeder and demo login |
 | `PARTY_MIN_SIZE` | Minimum party size, defaults to `2` |
 | `PARTY_MAX_SIZE` | Maximum party size, defaults to `3` |
+| `PARTY_SUPERVISOR_MAX_PARTIES` | Maximum supervised parties per academic term, defaults to `2` |
 | `SERVER_PORT` | HTTP port, defaults to `8080` |
 
 Development defaults exist for convenience.

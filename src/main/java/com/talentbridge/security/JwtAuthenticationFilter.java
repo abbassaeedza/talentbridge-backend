@@ -1,4 +1,6 @@
 package com.talentbridge.security;
+import com.talentbridge.enums.UserStatus;
+import com.talentbridge.repository.UserRepository;
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +18,7 @@ import java.util.UUID;
 @Component @RequiredArgsConstructor @Slf4j
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtTokenProvider tokenProvider;
+    private final UserRepository userRepository;
 
     @Override
     protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
@@ -24,10 +27,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             String token = extractToken(req);
             if (StringUtils.hasText(token) && tokenProvider.validateToken(token)) {
                 UUID userId = tokenProvider.getUserIdFromToken(token);
-                String role = tokenProvider.getRoleFromToken(token);
-                var auth = new UsernamePasswordAuthenticationToken(userId, null,
-                    List.of(new SimpleGrantedAuthority("ROLE_" + role)));
-                SecurityContextHolder.getContext().setAuthentication(auth);
+                userRepository.findById(userId)
+                        .filter(user -> user.getStatus() != UserStatus.SUSPENDED)
+                        .ifPresent(user -> {
+                            List<SimpleGrantedAuthority> authorities = user.getStatus() == UserStatus.APPROVED
+                                    ? List.of(
+                                            new SimpleGrantedAuthority("ROLE_" + user.getRole().name()),
+                                            new SimpleGrantedAuthority("APPROVED_USER"))
+                                    : List.of(new SimpleGrantedAuthority("ACCOUNT_REVIEW"));
+                            var auth = new UsernamePasswordAuthenticationToken(userId, null,
+                                    authorities);
+                            SecurityContextHolder.getContext().setAuthentication(auth);
+                        });
             }
         } catch (Exception e) { log.error("Auth error", e); }
         chain.doFilter(req, res);

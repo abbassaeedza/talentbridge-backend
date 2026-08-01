@@ -17,11 +17,11 @@ import java.util.List;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class Project extends BaseEntity {
 
-    @Column(nullable = false, length = 500)
+    @Column(nullable = false, length = 100)
     private String title;
 
     // Company-only internal reference name — not shown to students
-    @Column(name = "internal_name")
+    @Column(name = "internal_name", length = 100)
     private String internalName;
 
     @Column(name = "project_field", length = 100)

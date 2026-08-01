@@ -1,15 +1,17 @@
 package com.talentbridge.controller;
 import com.talentbridge.entity.Submission;
 import com.talentbridge.service.SubmissionService;
+import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.validation.annotation.Validated;
 import java.util.List;
 import java.util.UUID;
 
-@RestController @RequestMapping("/api/submissions") @RequiredArgsConstructor
+@RestController @RequestMapping("/api/submissions") @RequiredArgsConstructor @Validated
 public class SubmissionController {
     private final SubmissionService submissionService;
 
@@ -17,10 +19,10 @@ public class SubmissionController {
     @PreAuthorize("hasRole('STUDENT')")
     public Submission saveDraft(
             @PathVariable UUID partyId, @AuthenticationPrincipal UUID leaderId,
-            @RequestParam(required=false) String repoUrl,
-            @RequestParam(required=false) String branch,
+            @RequestParam(required=false) @Size(max = 500) String repoUrl,
+            @RequestParam(required=false) @Size(max = 100) String branch,
             @RequestParam(required=false) List<MultipartFile> documents,
-            @RequestParam(required=false) String notes) {
+            @RequestParam(required=false) @Size(max = 2000) String notes) {
         return submissionService.saveDraft(partyId, leaderId, repoUrl, branch, documents, notes);
     }
 

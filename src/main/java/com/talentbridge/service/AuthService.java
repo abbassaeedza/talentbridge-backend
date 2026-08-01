@@ -100,6 +100,8 @@ public class AuthService {
         UUID userId = tokenProvider.getUserIdFromToken(req.getRefreshToken());
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", userId.toString()));
+        if (user.getStatus() == UserStatus.SUSPENDED)
+            throw new ForbiddenException("Account suspended");
         return buildAuthResponse(user);
     }
 
