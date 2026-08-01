@@ -67,6 +67,12 @@ public class PartyController {
         return partyService.getAll();
     }
 
+    @GetMapping("/browse")
+    @PreAuthorize("hasRole('PARTY_SUPERVISOR')")
+    public List<PartyResponse> browse() {
+        return partyService.getAll();
+    }
+
     @GetMapping("/supervised")
     @PreAuthorize("hasAnyRole('PARTY_SUPERVISOR','PROJECT_SUPERVISOR')")
     public List<PartyResponse> getSupervised(@AuthenticationPrincipal UUID userId) {
