@@ -13,6 +13,10 @@ public interface PartyRepository extends JpaRepository<Party, UUID> {
     @Query("SELECT DISTINCT p FROM Party p LEFT JOIN FETCH p.members WHERE p.id = :id")
     Optional<Party> findByIdForUpdate(@Param("id") UUID id);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT p FROM Party p WHERE p.id IN :ids ORDER BY p.id")
+    List<Party> findAllByIdForUpdate(@Param("ids") List<UUID> ids);
+
     @Query("SELECT p FROM Party p JOIN p.members m WHERE m.id = :userId")
     Optional<Party> findByMemberId(@Param("userId") UUID userId);
     List<Party> findBySupervisorId(UUID supervisorId);

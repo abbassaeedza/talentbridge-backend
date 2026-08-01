@@ -48,6 +48,7 @@ public class DemoDataSeeder {
     private final ApplicationRepository applicationRepository;
     private final SubmissionRepository submissionRepository;
     private final NotificationRepository notificationRepository;
+    private final AppProperties appProperties;
 
     public void seed(User coordinator) {
         if (userRepository.existsByEmail(MARKER_EMAIL)) {
@@ -239,7 +240,8 @@ public class DemoDataSeeder {
     }
 
     private void addMember(Party party, User student) {
-        if (party != null && party.getMembers().size() < 3) party.getMembers().add(student);
+        if (party != null && party.getMembers().size() < appProperties.getParty().getMaxSize())
+            party.getMembers().add(student);
     }
 
     private List<Application> buildApplications(List<Party> parties, List<Project> projects) {

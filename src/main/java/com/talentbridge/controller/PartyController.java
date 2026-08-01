@@ -84,8 +84,10 @@ public class PartyController {
     }
 
     @GetMapping("/{partyId}/applications")
-    public List<ApplicationResponse> getApplications(@PathVariable UUID partyId) {
-        return partyService.getApplicationsByParty(partyId);
+    public List<ApplicationResponse> getApplications(
+            @PathVariable UUID partyId,
+            @AuthenticationPrincipal UUID viewerId) {
+        return partyService.getApplicationsByParty(partyId, viewerId);
     }
 
     @GetMapping("/projects/{projectId}/applications")

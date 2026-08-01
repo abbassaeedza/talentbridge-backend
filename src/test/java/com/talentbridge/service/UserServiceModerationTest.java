@@ -6,6 +6,7 @@ import com.talentbridge.entity.UserModerationEvent;
 import com.talentbridge.enums.ModerationEventType;
 import com.talentbridge.enums.UserRole;
 import com.talentbridge.enums.UserStatus;
+import com.talentbridge.exception.BadRequestException;
 import com.talentbridge.repository.ScorecardRepository;
 import com.talentbridge.repository.PartyRepository;
 import com.talentbridge.repository.ApplicationRepository;
@@ -78,7 +79,7 @@ class UserServiceModerationTest {
                 .status(UserStatus.REJECTED)
                 .build();
         user.setId(userId);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
         when(scorecardRepository.findByStudentId(userId)).thenReturn(Optional.empty());
 
         userService.deleteRejectedUser(userId);
@@ -98,5 +99,63 @@ class UserServiceModerationTest {
 
         assertThrows(com.talentbridge.exception.ForbiddenException.class,
                 () -> userService.getStudentProfile(studentId, companyId));
+    }
+
+    @Test
+    void refusesToRejectAnApprovedAccount() {
+        UUID userId = UUID.randomUUID();
+        User user = user(userId, UserRole.STUDENT, UserStatus.APPROVED);
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
+
+        BadRequestException error = assertThrows(BadRequestException.class,
+                () -> userService.rejectUser(userId, "Incomplete profile", UUID.randomUUID()));
+
+        assertEquals("Only pending or rejected users can be rejected", error.getMessage());
+    }
+
+    @Test
+    void refusesToSuspendAPendingAccount() {
+        UUID userId = UUID.randomUUID();
+        User user = user(userId, UserRole.STUDENT, UserStatus.PENDING);
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
+
+        BadRequestException error = assertThrows(BadRequestException.class,
+                () -> userService.suspendUser(userId, UUID.randomUUID()));
+
+        assertEquals("Only approved users can be suspended", error.getMessage());
+    }
+
+    @Test
+    void refusesToModerateACoordinatorAccount() {
+        UUID userId = UUID.randomUUID();
+        User user = user(userId, UserRole.COORDINATOR, UserStatus.APPROVED);
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
+
+        assertThrows(BadRequestException.class,
+                () -> userService.suspendUser(userId, UUID.randomUUID()));
+    }
+
+    @Test
+    void refusesToUnsuspendAnAccountThatIsNotSuspended() {
+        UUID userId = UUID.randomUUID();
+        User user = user(userId, UserRole.STUDENT, UserStatus.REJECTED);
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
+
+        BadRequestException error = assertThrows(BadRequestException.class,
+                () -> userService.unsuspendUser(userId));
+
+        assertEquals("Only suspended users can be unsuspended", error.getMessage());
+    }
+
+    private User user(UUID id, UserRole role, UserStatus status) {
+        User user = User.builder()
+                .email(id + "@example.com")
+                .firstName("Demo")
+                .lastName("User")
+                .role(role)
+                .status(status)
+                .build();
+        user.setId(id);
+        return user;
     }
 }

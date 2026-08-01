@@ -175,9 +175,10 @@ public class ProjectService {
 
     @Transactional
     public ProjectResponse assignToParty(UUID projectId, UUID partyId, UUID coordinatorId) {
-        Project project = getOrThrow(projectId);
-        Party party = partyRepository.findById(partyId)
+        Party party = partyRepository.findByIdForUpdate(partyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Party", partyId.toString()));
+        Project project = projectRepository.findByIdForUpdate(projectId)
+                .orElseThrow(() -> new ResourceNotFoundException("Project", projectId.toString()));
 
         if (project.getStatus() != ProjectStatus.OPEN)
             throw new BadRequestException("Only open projects can be assigned");
@@ -191,6 +192,11 @@ public class ProjectService {
             app.setStatus(ApplicationStatus.ASSIGNED);
             applicationRepository.save(app);
         });
+
+        applicationRepository.findByPartyIdOrderByRankPositionAsc(partyId).stream()
+                .filter(app -> app.getStatus() == ApplicationStatus.PENDING)
+                .filter(app -> !app.getProject().getId().equals(projectId))
+                .forEach(app -> app.setStatus(ApplicationStatus.WITHDRAWN));
 
         applicationRepository.findByProjectIdAndStatus(projectId, ApplicationStatus.PENDING)
                 .stream().filter(a -> !a.getParty().getId().equals(partyId))

@@ -2,10 +2,12 @@ package com.talentbridge.service;
 
 import com.talentbridge.config.AppProperties;
 import com.talentbridge.entity.ApplicationSettings;
+import com.talentbridge.entity.Application;
 import com.talentbridge.entity.Party;
 import com.talentbridge.entity.Project;
 import com.talentbridge.entity.User;
 import com.talentbridge.enums.ProjectStatus;
+import com.talentbridge.enums.ApplicationStatus;
 import com.talentbridge.repository.ApplicationRepository;
 import com.talentbridge.repository.ApplicationSettingsRepository;
 import com.talentbridge.repository.PartyRepository;
@@ -76,19 +78,60 @@ class ProjectServiceDeadlineTest {
     void refusesToAssignAnUndersizedParty() {
         UUID projectId = UUID.randomUUID();
         UUID partyId = UUID.randomUUID();
-        Project project = Project.builder().status(ProjectStatus.OPEN).build();
+        Project project = Project.builder()
+                .status(ProjectStatus.OPEN)
+                .createdBy(User.builder().firstName("Demo").lastName("Company").build())
+                .build();
+        project.setId(projectId);
         Party party = Party.builder()
                 .members(new java.util.HashSet<>(List.of(User.builder().build())))
                 .build();
         AppProperties.Party rules = new AppProperties.Party();
         rules.setMinSize(2);
-        when(projectRepository.findById(projectId)).thenReturn(Optional.of(project));
-        when(partyRepository.findById(partyId)).thenReturn(Optional.of(party));
+        when(partyRepository.findByIdForUpdate(partyId)).thenReturn(Optional.of(party));
+        when(projectRepository.findByIdForUpdate(projectId)).thenReturn(Optional.of(project));
         when(appProperties.getParty()).thenReturn(rules);
 
         var error = assertThrows(com.talentbridge.exception.BadRequestException.class,
                 () -> projectService.assignToParty(projectId, partyId, UUID.randomUUID()));
 
         assertEquals("Party needs minimum 2 members", error.getMessage());
+    }
+
+    @Test
+    void withdrawsTheSelectedPartysOtherApplicationsOnAssignment() {
+        UUID projectId = UUID.randomUUID();
+        UUID otherProjectId = UUID.randomUUID();
+        UUID partyId = UUID.randomUUID();
+        User leader = User.builder().build();
+        User member = User.builder().build();
+        Project project = Project.builder()
+                .status(ProjectStatus.OPEN)
+                .createdBy(User.builder().firstName("Demo").lastName("Company").build())
+                .build();
+        project.setId(projectId);
+        Project otherProject = Project.builder().status(ProjectStatus.OPEN).build();
+        otherProject.setId(otherProjectId);
+        Party party = Party.builder()
+                .leader(leader)
+                .members(new java.util.HashSet<>(List.of(leader, member)))
+                .build();
+        Application selected = Application.builder()
+                .party(party).project(project).rankPosition(1).status(ApplicationStatus.PENDING).build();
+        Application other = Application.builder()
+                .party(party).project(otherProject).rankPosition(2).status(ApplicationStatus.PENDING).build();
+        AppProperties.Party rules = new AppProperties.Party();
+        when(partyRepository.findByIdForUpdate(partyId)).thenReturn(Optional.of(party));
+        when(projectRepository.findByIdForUpdate(projectId)).thenReturn(Optional.of(project));
+        when(appProperties.getParty()).thenReturn(rules);
+        when(applicationRepository.findByPartyIdAndProjectId(partyId, projectId)).thenReturn(Optional.of(selected));
+        when(applicationRepository.findByPartyIdOrderByRankPositionAsc(partyId)).thenReturn(List.of(selected, other));
+        when(applicationRepository.findByProjectIdAndStatus(projectId, ApplicationStatus.PENDING))
+                .thenReturn(List.of());
+
+        projectService.assignToParty(projectId, partyId, UUID.randomUUID());
+
+        assertEquals(ApplicationStatus.ASSIGNED, selected.getStatus());
+        assertEquals(ApplicationStatus.WITHDRAWN, other.getStatus());
     }
 }

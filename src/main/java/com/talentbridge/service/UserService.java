@@ -76,6 +76,9 @@ public class UserService {
     @Transactional
     public UserResponse approveUser(UUID userId, UUID coordinatorId) {
         User user = getByIdForUpdate(userId);
+        ensureModeratable(user);
+        if (user.getStatus() != UserStatus.PENDING && user.getStatus() != UserStatus.REJECTED)
+            throw new BadRequestException("Only pending or rejected users can be approved");
         user.setStatus(UserStatus.APPROVED);
         user.setRejectionReason(null);
         user = userRepository.save(user);
@@ -86,6 +89,9 @@ public class UserService {
     @Transactional
     public UserResponse rejectUser(UUID userId, String reason, UUID coordinatorId) {
         User user = getByIdForUpdate(userId);
+        ensureModeratable(user);
+        if (user.getStatus() != UserStatus.PENDING && user.getStatus() != UserStatus.REJECTED)
+            throw new BadRequestException("Only pending or rejected users can be rejected");
         if (user.getStatus() != UserStatus.REJECTED)
             recordModerationEvent(user, ModerationEventType.REJECTED, coordinatorId);
         user.setStatus(UserStatus.REJECTED);
@@ -98,6 +104,9 @@ public class UserService {
     @Transactional
     public UserResponse suspendUser(UUID userId, UUID coordinatorId) {
         User user = getByIdForUpdate(userId);
+        ensureModeratable(user);
+        if (user.getStatus() != UserStatus.APPROVED && user.getStatus() != UserStatus.SUSPENDED)
+            throw new BadRequestException("Only approved users can be suspended");
         if (user.getStatus() != UserStatus.SUSPENDED)
             recordModerationEvent(user, ModerationEventType.SUSPENDED, coordinatorId);
         user.setStatus(UserStatus.SUSPENDED);
@@ -107,17 +116,26 @@ public class UserService {
     @Transactional
     public UserResponse unsuspendUser(UUID userId) {
         User user = getByIdForUpdate(userId);
+        ensureModeratable(user);
+        if (user.getStatus() != UserStatus.SUSPENDED)
+            throw new BadRequestException("Only suspended users can be unsuspended");
         user.setStatus(UserStatus.APPROVED);
         return toCoordinatorResponse(userRepository.save(user));
     }
 
     @Transactional
     public void deleteRejectedUser(UUID userId) {
-        User user = getById(userId);
+        User user = getByIdForUpdate(userId);
+        ensureModeratable(user);
         if (user.getStatus() != UserStatus.REJECTED)
             throw new BadRequestException("Only rejected users can be deleted");
         scorecardRepository.findByStudentId(userId).ifPresent(scorecardRepository::delete);
         userRepository.delete(user);
+    }
+
+    private void ensureModeratable(User user) {
+        if (user.getRole() == UserRole.COORDINATOR)
+            throw new BadRequestException("Coordinator accounts cannot be moderated");
     }
 
     public PageResponse<UserResponse> getPendingUsers(int page, int size) {

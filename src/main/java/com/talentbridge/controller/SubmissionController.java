@@ -34,13 +34,17 @@ public class SubmissionController {
     }
 
     @GetMapping("/{partyId}")
-    public Submission getByParty(@PathVariable UUID partyId) {
-        return submissionService.getByPartyId(partyId);
+    public Submission getByParty(
+            @PathVariable UUID partyId,
+            @AuthenticationPrincipal UUID viewerId) {
+        return submissionService.getByPartyId(partyId, viewerId);
     }
 
     @GetMapping("/project/{projectId}")
-    @PreAuthorize("hasAnyRole('COORDINATOR','PROJECT_SUPERVISOR','PARTY_SUPERVISOR')")
-    public List<Submission> getByProject(@PathVariable UUID projectId) {
-        return submissionService.getByProjectId(projectId);
+    @PreAuthorize("hasAnyRole('COORDINATOR','COMPANY','PROJECT_SUPERVISOR','PARTY_SUPERVISOR')")
+    public List<Submission> getByProject(
+            @PathVariable UUID projectId,
+            @AuthenticationPrincipal UUID viewerId) {
+        return submissionService.getByProjectId(projectId, viewerId);
     }
 }

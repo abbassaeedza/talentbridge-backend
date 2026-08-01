@@ -23,9 +23,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Set;
+import java.util.HashSet;
+import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
@@ -47,6 +50,7 @@ class DemoDataSeederTest {
     @Mock private ApplicationRepository applicationRepository;
     @Mock private SubmissionRepository submissionRepository;
     @Mock private NotificationRepository notificationRepository;
+    @Spy private AppProperties appProperties = new AppProperties();
     @InjectMocks private DemoDataSeeder seeder;
 
     private User coordinator;
@@ -118,6 +122,23 @@ class DemoDataSeederTest {
         verify(applicationRepository).saveAll(argThat(items -> count(items) == 3));
         verify(submissionRepository).saveAll(argThat(items -> count(items) == 2));
         verify(notificationRepository).saveAll(argThat(items -> count(items) == 3));
+    }
+
+    @Test
+    void reconciliationRespectsTheConfiguredPartyMaximum() {
+        User first = User.builder().email("first@example.com").build();
+        User second = User.builder().email("second@example.com").build();
+        Party party = Party.builder()
+                .name("Team Alpha Demo")
+                .members(new HashSet<>(List.of(first, second)))
+                .build();
+        appProperties.getParty().setMaxSize(2);
+        when(userRepository.existsByEmail(DemoDataSeeder.MARKER_EMAIL)).thenReturn(true);
+        when(partyRepository.findAll()).thenReturn(List.of(party));
+
+        seeder.seed(coordinator);
+
+        org.junit.jupiter.api.Assertions.assertEquals(2, party.getMembers().size());
     }
 
     private long count(Iterable<?> items) {

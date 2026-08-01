@@ -15,13 +15,13 @@ public class Party extends BaseEntity {
     @ManyToMany(fetch = FetchType.LAZY)
     @JoinTable(name = "party_members",
         joinColumns = @JoinColumn(name = "party_id"),
-        inverseJoinColumns = @JoinColumn(name = "user_id"))
+        inverseJoinColumns = @JoinColumn(name = "user_id", unique = true))
     @Builder.Default private Set<User> members = new HashSet<>();
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "supervisor_id") private User supervisor;
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 50) private PartyStatus status;
     @Column(length = 50) private String semester;
     private Integer academicYear;
-    @OneToOne(fetch = FetchType.LAZY) @JoinColumn(name = "assigned_project_id") private Project assignedProject;
+    @OneToOne(fetch = FetchType.LAZY) @JoinColumn(name = "assigned_project_id", unique = true) private Project assignedProject;
     @OneToMany(mappedBy = "party", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("rankPosition ASC")
     @Builder.Default private List<Application> applications = new ArrayList<>();
