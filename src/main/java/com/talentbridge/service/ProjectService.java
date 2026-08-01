@@ -338,6 +338,7 @@ public class ProjectService {
                 .projectSupervisorId(p.getProjectSupervisor() != null ? p.getProjectSupervisor().getId() : null)
                 .assignedPartyId(p.getAssignedParty() != null ? p.getAssignedParty().getId() : null)
                 .assignedPartyName(p.getAssignedParty() != null ? p.getAssignedParty().getName() : null)
+                .finished(isFinished(p))
                 .createdByName(p.getCreatedBy().getFullName())
                 .partyApplicationCount(projectRepository.countApplicationsByProjectId(p.getId()))
                 .projectField(p.getProjectField())

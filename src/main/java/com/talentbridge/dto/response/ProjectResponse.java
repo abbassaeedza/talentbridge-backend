@@ -25,6 +25,7 @@ public class ProjectResponse {
     private UUID projectSupervisorId;
     private UUID assignedPartyId;
     private String assignedPartyName;
+    private boolean finished;
     private String createdByName;
     private long partyApplicationCount;
     private String projectField;

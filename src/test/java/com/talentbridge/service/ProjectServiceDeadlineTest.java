@@ -7,6 +7,7 @@ import com.talentbridge.entity.Party;
 import com.talentbridge.entity.Project;
 import com.talentbridge.entity.User;
 import com.talentbridge.enums.ProjectStatus;
+import com.talentbridge.enums.PartyStatus;
 import com.talentbridge.enums.ApplicationStatus;
 import com.talentbridge.enums.UserRole;
 import com.talentbridge.enums.UserStatus;
@@ -120,6 +121,14 @@ class ProjectServiceDeadlineTest {
 
         assertEquals(individualDate, open.getDeadline());
         verify(projectRepository, org.mockito.Mockito.never()).saveAll(any());
+    }
+
+    @Test
+    void marksSubmittedProjectsFinishedInResponses() {
+        Project submitted = project(ProjectStatus.ASSIGNED);
+        submitted.setAssignedParty(Party.builder().status(PartyStatus.SUBMITTED).build());
+
+        assertEquals(true, projectService.toResponse(submitted).isFinished());
     }
 
     private Project project(ProjectStatus status) {

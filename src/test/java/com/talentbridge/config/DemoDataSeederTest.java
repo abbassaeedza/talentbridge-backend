@@ -154,6 +154,7 @@ class DemoDataSeederTest {
 
         verify(partyRepository).delete(fixture);
         verify(partyRepository, never()).delete(nonFixture);
+        verify(userRepository).flush();
     }
 
     @Test
@@ -168,8 +169,6 @@ class DemoDataSeederTest {
         org.junit.jupiter.api.Assertions.assertTrue(scorecard.getValue().getEntries().stream()
                 .allMatch(entry -> entry.getScorecard() == scorecard.getValue()));
     }
-
-    @Test
 
     private long count(Iterable<?> items) {
         return StreamSupport.stream(items.spliterator(), false).count();

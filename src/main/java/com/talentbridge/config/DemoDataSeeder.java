@@ -294,8 +294,9 @@ public class DemoDataSeeder {
                     invitationRepository.findByCompanyIdOrderByCreatedAtDesc(company.getId()).forEach(invitationRepository::delete);
                     projectRepository.findByCreatedById(company.getUser().getId()).forEach(projectRepository::delete);
                     companyProfileRepository.delete(company);
-                });
+        });
         userRepository.deleteAll(demoUsers);
+        userRepository.flush();
     }
 
     private List<Application> buildApplications(List<Party> parties, List<Project> projects) {
