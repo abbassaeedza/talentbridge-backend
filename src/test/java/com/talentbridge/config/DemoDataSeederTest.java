@@ -18,12 +18,17 @@ import com.talentbridge.repository.ProjectRepository;
 import com.talentbridge.repository.StudentProfileRepository;
 import com.talentbridge.repository.SubmissionRepository;
 import com.talentbridge.repository.UserRepository;
+import com.talentbridge.repository.ApplicationSettingsRepository;
+import com.talentbridge.repository.EvaluationReportRepository;
+import com.talentbridge.repository.NotificationPreferenceRepository;
+import com.talentbridge.repository.ProjectSupervisorInvitationRepository;
+import com.talentbridge.repository.ScorecardRepository;
+import com.talentbridge.repository.SupervisorProfileRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
-import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Set;
@@ -38,6 +43,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.never;
 
 @ExtendWith(MockitoExtension.class)
 class DemoDataSeederTest {
@@ -50,7 +56,12 @@ class DemoDataSeederTest {
     @Mock private ApplicationRepository applicationRepository;
     @Mock private SubmissionRepository submissionRepository;
     @Mock private NotificationRepository notificationRepository;
-    @Spy private AppProperties appProperties = new AppProperties();
+    @Mock private ApplicationSettingsRepository applicationSettingsRepository;
+    @Mock private SupervisorProfileRepository supervisorProfileRepository;
+    @Mock private ProjectSupervisorInvitationRepository invitationRepository;
+    @Mock private EvaluationReportRepository evaluationReportRepository;
+    @Mock private ScorecardRepository scorecardRepository;
+    @Mock private NotificationPreferenceRepository notificationPreferenceRepository;
     @InjectMocks private DemoDataSeeder seeder;
 
     private User coordinator;
@@ -69,16 +80,14 @@ class DemoDataSeederTest {
     }
 
     @Test
-    void reconcilesGuardrailDataWhenTheDemoDatasetAlreadyExists() {
-        when(userRepository.existsByEmail(DemoDataSeeder.MARKER_EMAIL)).thenReturn(true);
-
+    void leavesCurrentDemoDataUntouchedOnOrdinaryRestart() {
+        com.talentbridge.entity.ApplicationSettings settings = new com.talentbridge.entity.ApplicationSettings();
+        settings.setDemoDataVersion(DemoDataSeeder.DEMO_DATA_VERSION);
+        when(applicationSettingsRepository.findById(com.talentbridge.entity.ApplicationSettings.ID))
+                .thenReturn(java.util.Optional.of(settings));
         seeder.seed(coordinator);
 
-        verify(userRepository).saveAll(argThat(users -> count(users) == 4));
-        verify(studentProfileRepository).saveAll(argThat(profiles -> count(profiles) == 4));
-        verify(partyRepository).findAll();
-        verify(partyRepository, times(0)).saveAll(any());
-        verifyNoInteractions(companyProfileRepository, projectRepository,
+        verifyNoInteractions(userRepository, companyProfileRepository, projectRepository, partyRepository,
                 applicationRepository, submissionRepository, notificationRepository);
     }
 
@@ -90,13 +99,13 @@ class DemoDataSeederTest {
 
         verify(userRepository).saveAll(argThat(users -> {
             var saved = StreamSupport.stream(users.spliterator(), false).toList();
-            return saved.size() == 15
+            return saved.size() == 17
                     && saved.stream().map(User::getStatus).collect(Collectors.toSet())
                     .equals(Set.of(UserStatus.PENDING, UserStatus.APPROVED,
                             UserStatus.REJECTED, UserStatus.SUSPENDED));
         }));
         verify(studentProfileRepository).saveAll(argThat(profiles ->
-                StreamSupport.stream(profiles.spliterator(), false).count() == 12));
+                StreamSupport.stream(profiles.spliterator(), false).count() == 13));
         verify(companyProfileRepository).save(any());
         verify(projectRepository).saveAll(argThat(projects -> {
             var statuses = StreamSupport.stream(projects.spliterator(), false)
@@ -119,27 +128,48 @@ class DemoDataSeederTest {
                     .allMatch(p -> p.getMembers().size() >= 2)
                     && saved.stream().filter(p -> p.getSupervisor() != null).count() <= 2;
         }));
-        verify(applicationRepository).saveAll(argThat(items -> count(items) == 3));
-        verify(submissionRepository).saveAll(argThat(items -> count(items) == 2));
+        verify(applicationRepository).saveAll(argThat(items -> count(items) == 4));
+        verify(submissionRepository).saveAll(argThat(items -> count(items) == 3));
         verify(notificationRepository).saveAll(argThat(items -> count(items) == 3));
     }
 
     @Test
-    void reconciliationRespectsTheConfiguredPartyMaximum() {
-        User first = User.builder().email("first@example.com").build();
-        User second = User.builder().email("second@example.com").build();
-        Party party = Party.builder()
-                .name("Team Alpha Demo")
-                .members(new HashSet<>(List.of(first, second)))
-                .build();
-        appProperties.getParty().setMaxSize(2);
+    void replacesOnlyKnownFixtureParties() {
+        com.talentbridge.entity.ApplicationSettings settings = new com.talentbridge.entity.ApplicationSettings();
+        settings.setDemoDataVersion(1);
+        User demoCompany = User.builder().email(DemoDataSeeder.MARKER_EMAIL).build();
+        demoCompany.setId(java.util.UUID.randomUUID());
+        Party fixture = Party.builder().name("Team Alpha Demo").build();
+        Party nonFixture = Party.builder().name("Capstone Demo").build();
+        when(applicationSettingsRepository.findById(com.talentbridge.entity.ApplicationSettings.ID))
+                .thenReturn(java.util.Optional.of(settings));
         when(userRepository.existsByEmail(DemoDataSeeder.MARKER_EMAIL)).thenReturn(true);
-        when(partyRepository.findAll()).thenReturn(List.of(party));
+        when(userRepository.findByEmail(org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(java.util.Optional.empty());
+        when(userRepository.findByEmail(DemoDataSeeder.MARKER_EMAIL))
+                .thenReturn(java.util.Optional.of(demoCompany));
+        when(partyRepository.findAll()).thenReturn(List.of(fixture, nonFixture));
 
         seeder.seed(coordinator);
 
-        org.junit.jupiter.api.Assertions.assertEquals(2, party.getMembers().size());
+        verify(partyRepository).delete(fixture);
+        verify(partyRepository, never()).delete(nonFixture);
     }
+
+    @Test
+    void givesEverySeededScorecardEntryItsOwningScorecard() {
+        when(userRepository.existsByEmail(DemoDataSeeder.MARKER_EMAIL)).thenReturn(false);
+        org.mockito.ArgumentCaptor<com.talentbridge.entity.Scorecard> scorecard =
+                org.mockito.ArgumentCaptor.forClass(com.talentbridge.entity.Scorecard.class);
+
+        seeder.seed(coordinator);
+
+        verify(scorecardRepository).save(scorecard.capture());
+        org.junit.jupiter.api.Assertions.assertTrue(scorecard.getValue().getEntries().stream()
+                .allMatch(entry -> entry.getScorecard() == scorecard.getValue()));
+    }
+
+    @Test
 
     private long count(Iterable<?> items) {
         return StreamSupport.stream(items.spliterator(), false).count();

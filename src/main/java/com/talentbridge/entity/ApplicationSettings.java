@@ -23,4 +23,10 @@ public class ApplicationSettings {
 
     @Column(name = "global_deadline")
     private LocalDateTime globalDeadline;
+
+    @Column(name = "global_deadline_enabled", nullable = false)
+    private boolean globalDeadlineEnabled;
+
+    @Column(name = "demo_data_version")
+    private Integer demoDataVersion;
 }

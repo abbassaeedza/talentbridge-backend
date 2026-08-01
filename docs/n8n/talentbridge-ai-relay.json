@@ -1,0 +1,94 @@
+{
+  "name": "TalentBridge AI Relay",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "13b62449-1c68-4d84-9564-d0eefbf0a2e3",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth"
+      },
+      "id": "f4bbbc13-4b94-4da7-a876-718948e010d1",
+      "name": "TalentBridge Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "tb1"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\nconst operation = body.operation;\nif (!['chat', 'chat_guard', 'evaluation'].includes(operation)) throw new Error('Unsupported operation');\nif (typeof body.message !== 'string' || !body.message.trim()) throw new Error('message is required');\nconst history = Array.isArray(body.history) ? body.history.slice(-10).flatMap(item => {\n  if (!item || !['user', 'assistant'].includes(item.role) || typeof item.content !== 'string') return [];\n  return [{ role: item.role, content: item.content.slice(0, 4000) }];\n}) : [];\nconst system = typeof body.system === 'string' ? body.system.slice(0, 8000) : 'You are TalentBridge AI support.';\nconst maxTokens = Math.min(Math.max(Number(body.maxTokens) || 512, 1), 2048);\nreturn [{ json: { model: typeof body.model === 'string' ? body.model : 'gpt-4o-mini', maxTokens, messages: [{ role: 'system', content: system }, ...history, { role: 'user', content: body.message.trim().slice(0, 12000) }] } }];"
+      },
+      "id": "0e1a0f1c-f607-4d37-924b-2e013c0bc0f6",
+      "name": "Prepare Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "generate",
+        "model": "={{ $json.model }}",
+        "messages": "={{ $json.messages }}",
+        "options": {
+          "maxTokens": "={{ $json.maxTokens }}"
+        }
+      },
+      "id": "484bf1f1-bec9-4ea6-85df-3fa90898209d",
+      "name": "OpenAI - Generate Chat Completion",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [480, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const message = $json.choices?.[0]?.message?.content ?? $json.message?.content ?? $json.message;\nif (typeof message !== 'string' || !message.trim()) throw new Error('OpenAI returned no message');\nreturn [{ json: { message: message.trim() } }];"
+      },
+      "id": "f11ce5e3-3765-4e71-9879-76b868f7f6b6",
+      "name": "Normalize Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { message: $json.message } }}",
+        "options": {}
+      },
+      "id": "5fe434af-5762-4c1f-8994-c63dd411cb47",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [960, 0]
+    }
+  ],
+  "connections": {
+    "TalentBridge Webhook": {
+      "main": [[{ "node": "Prepare Input", "type": "main", "index": 0 }]]
+    },
+    "Prepare Input": {
+      "main": [[{ "node": "OpenAI - Generate Chat Completion", "type": "main", "index": 0 }]]
+    },
+    "OpenAI - Generate Chat Completion": {
+      "main": [[{ "node": "Normalize Response", "type": "main", "index": 0 }]]
+    },
+    "Normalize Response": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1b35d0f7-bdb1-4ca2-8bc4-2f92099b7bbd",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

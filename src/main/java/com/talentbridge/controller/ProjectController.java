@@ -47,10 +47,8 @@ public class ProjectController {
     }
 
     @GetMapping("/global-deadline")
-    public ResponseEntity<LocalDateTime> getGlobalDeadline() {
-        return projectService.getGlobalDeadline()
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.noContent().build());
+    public GlobalDeadlineResponse getGlobalDeadline() {
+        return projectService.getGlobalDeadline();
     }
 
     @GetMapping("/{id}")
@@ -124,10 +122,16 @@ public class ProjectController {
         return projectService.setDeadline(id, deadline);
     }
 
+    @PostMapping("/global-deadline/preview")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public GlobalDeadlinePreviewResponse previewGlobalDeadline(@Valid @RequestBody GlobalDeadlineRequest req) {
+        return projectService.previewGlobalDeadline(req);
+    }
+
     @PutMapping("/global-deadline")
     @PreAuthorize("hasRole('COORDINATOR')")
     public ResponseEntity<Void> setGlobalDeadline(@Valid @RequestBody GlobalDeadlineRequest req) {
-        projectService.setGlobalDeadline(req.getDeadline());
+        projectService.setGlobalDeadline(req);
         return ResponseEntity.noContent().build();
     }
 

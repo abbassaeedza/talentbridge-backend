@@ -18,12 +18,13 @@ public class NotificationService {
     private final NotificationRepository notificationRepository;
     private final UserRepository userRepository;
     private final EmailService emailService;
+    private final NotificationPreferenceRepository notificationPreferenceRepository;
 
     @Transactional
     public void send(User recipient, NotificationType type, String title, String message) {
         notificationRepository.save(Notification.builder()
                 .recipient(recipient).type(type).title(title).message(message).read(false).build());
-        emailService.send(recipient.getEmail(), title, message);
+        emailIfEnabled(recipient, type, title, message);
     }
 
     @Transactional
@@ -32,7 +33,7 @@ public class NotificationService {
         notificationRepository.save(Notification.builder()
                 .recipient(recipient).type(type).title(title).message(message)
                 .referenceId(refId).referenceType(refType).read(false).build());
-        emailService.send(recipient.getEmail(), title, message);
+        emailIfEnabled(recipient, type, title, message);
     }
 
     public void notifyCoordinatorsNewRegistration(User newUser) {
@@ -112,5 +113,12 @@ public class NotificationService {
 
     public long countUnread(UUID userId) {
         return notificationRepository.countByRecipientIdAndReadFalse(userId);
+    }
+
+    private void emailIfEnabled(User recipient, NotificationType type, String title, String message) {
+        boolean enabled = notificationPreferenceRepository.findByUserIdAndType(recipient.getId(), type)
+                .map(NotificationPreference::isEmailEnabled)
+                .orElse(true);
+        if (enabled) emailService.send(recipient.getEmail(), title, message);
     }
 }

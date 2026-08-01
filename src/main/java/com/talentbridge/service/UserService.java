@@ -2,9 +2,11 @@ package com.talentbridge.service;
 
 import com.talentbridge.dto.request.StudentOnboardingRequest;
 import com.talentbridge.dto.request.SupervisorOnboardingRequest;
+import com.talentbridge.dto.request.NotificationPreferenceRequest;
 import com.talentbridge.dto.response.PageResponse;
 import com.talentbridge.dto.response.UserResponse;
 import com.talentbridge.dto.response.SupervisorProfileResponse;
+import com.talentbridge.dto.response.NotificationPreferenceResponse;
 import com.talentbridge.entity.*;
 import com.talentbridge.enums.NotificationType;
 import com.talentbridge.enums.ModerationEventType;
@@ -19,6 +21,8 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Arrays;
 import java.util.UUID;
 
 @Service
@@ -34,10 +38,32 @@ public class UserService {
     private final ApplicationRepository applicationRepository;
     private final NotificationService notificationService;
     private final FileStorageService fileStorageService;
+    private final NotificationPreferenceRepository notificationPreferenceRepository;
 
     public User getById(UUID id) {
         return userRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("User", id.toString()));
+    }
+
+    public List<NotificationPreferenceResponse> getNotificationPreferences(UUID userId) {
+        getById(userId);
+        Map<NotificationType, NotificationPreference> saved = notificationPreferenceRepository.findByUserId(userId)
+                .stream().collect(java.util.stream.Collectors.toMap(NotificationPreference::getType, p -> p));
+        return Arrays.stream(NotificationType.values())
+                .map(type -> new NotificationPreferenceResponse(type,
+                        saved.get(type) == null || saved.get(type).isEmailEnabled()))
+                .toList();
+    }
+
+    @Transactional
+    public NotificationPreferenceResponse updateNotificationPreference(UUID userId, NotificationType type,
+                                                                        NotificationPreferenceRequest req) {
+        User user = getById(userId);
+        NotificationPreference preference = notificationPreferenceRepository.findByUserIdAndType(userId, type)
+                .orElseGet(() -> NotificationPreference.builder().user(user).type(type).build());
+        preference.setEmailEnabled(req.getEmailEnabled());
+        NotificationPreference saved = notificationPreferenceRepository.save(preference);
+        return new NotificationPreferenceResponse(saved.getType(), saved.isEmailEnabled());
     }
 
     public UserResponse getStudentProfile(UUID studentId, UUID viewerId) {

@@ -6,6 +6,9 @@ import com.talentbridge.dto.response.PageResponse;
 import com.talentbridge.dto.response.UserResponse;
 import com.talentbridge.entity.*;
 import com.talentbridge.enums.UserRole;
+import com.talentbridge.enums.NotificationType;
+import com.talentbridge.dto.request.NotificationPreferenceRequest;
+import com.talentbridge.dto.response.NotificationPreferenceResponse;
 import com.talentbridge.service.*;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +19,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.Map;
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -31,6 +35,20 @@ public class UserController {
     @GetMapping("/me")
     public UserResponse getMe(@AuthenticationPrincipal UUID userId) {
         return userService.toResponse(userService.getById(userId));
+    }
+
+    @GetMapping("/notification-preferences")
+    public List<NotificationPreferenceResponse> getNotificationPreferences(
+            @AuthenticationPrincipal UUID userId) {
+        return userService.getNotificationPreferences(userId);
+    }
+
+    @PutMapping("/notification-preferences/{type}")
+    public NotificationPreferenceResponse updateNotificationPreference(
+            @AuthenticationPrincipal UUID userId,
+            @PathVariable NotificationType type,
+            @Valid @RequestBody NotificationPreferenceRequest req) {
+        return userService.updateNotificationPreference(userId, type, req);
     }
 
     @PostMapping("/onboarding")

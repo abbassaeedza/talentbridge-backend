@@ -11,6 +11,7 @@ import com.talentbridge.enums.ApplicationStatus;
 import com.talentbridge.enums.UserRole;
 import com.talentbridge.enums.UserStatus;
 import com.talentbridge.dto.request.ProjectRequest;
+import com.talentbridge.dto.request.GlobalDeadlineRequest;
 import com.talentbridge.exception.BadRequestException;
 import com.talentbridge.repository.ApplicationRepository;
 import com.talentbridge.repository.ApplicationSettingsRepository;
@@ -22,8 +23,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.Pageable;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -35,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class ProjectServiceDeadlineTest {
@@ -66,16 +66,67 @@ class ProjectServiceDeadlineTest {
                     storedSettings.set(settings);
                     return settings;
                 });
-        when(projectRepository.findByStatus(ProjectStatus.OPEN, Pageable.unpaged()))
-                .thenReturn(new PageImpl<>(List.of(openProject)));
         when(projectRepository.findById(any(UUID.class))).thenReturn(Optional.of(openProject));
         when(projectRepository.save(openProject)).thenReturn(openProject);
 
-        projectService.setGlobalDeadline(globalDeadline);
+        GlobalDeadlineRequest globalRequest = new GlobalDeadlineRequest();
+        globalRequest.setEnabled(true);
+        globalRequest.setDeadline(globalDeadline);
+        projectService.setGlobalDeadline(globalRequest);
         projectService.setDeadline(UUID.randomUUID(), individualDeadline);
 
-        assertEquals(globalDeadline, projectService.getGlobalDeadline().orElseThrow());
+        assertEquals(globalDeadline, projectService.getGlobalDeadline().deadline());
         assertEquals(individualDeadline, openProject.getDeadline());
+    }
+
+    @Test
+    void previewsAndUpdatesOnlyUnfinishedEligibleProjects() {
+        LocalDateTime deadline = LocalDateTime.of(2030, 9, 1, 17, 0);
+        Project pending = project(ProjectStatus.PENDING_REVIEW);
+        Project open = project(ProjectStatus.OPEN);
+        Project assigned = project(ProjectStatus.ASSIGNED);
+        Project submitted = project(ProjectStatus.ASSIGNED);
+        submitted.setAssignedParty(Party.builder().status(com.talentbridge.enums.PartyStatus.SUBMITTED).build());
+        Project closed = project(ProjectStatus.CLOSED);
+        when(projectRepository.findAll()).thenReturn(List.of(pending, open, assigned, submitted, closed));
+
+        GlobalDeadlineRequest request = new GlobalDeadlineRequest();
+        request.setEnabled(true);
+        request.setDeadline(deadline);
+
+        var preview = projectService.previewGlobalDeadline(request);
+        projectService.setGlobalDeadline(request);
+
+        assertEquals(1, preview.affectedCounts().get(ProjectStatus.PENDING_REVIEW.name()));
+        assertEquals(1, preview.affectedCounts().get(ProjectStatus.OPEN.name()));
+        assertEquals(1, preview.affectedCounts().get(ProjectStatus.ASSIGNED.name()));
+        assertEquals(2, preview.excludedFinishedCount());
+        assertEquals(deadline, pending.getDeadline());
+        assertEquals(deadline, open.getDeadline());
+        assertEquals(deadline, assigned.getDeadline());
+        assertEquals(null, submitted.getDeadline());
+        verify(projectRepository).saveAll(List.of(pending, open, assigned));
+    }
+
+    @Test
+    void disablingGlobalDeadlineDoesNotOverwriteExistingProjectDates() {
+        Project open = project(ProjectStatus.OPEN);
+        LocalDateTime individualDate = LocalDateTime.of(2030, 8, 20, 17, 0);
+        open.setDeadline(individualDate);
+        GlobalDeadlineRequest request = new GlobalDeadlineRequest();
+        request.setEnabled(false);
+
+        projectService.setGlobalDeadline(request);
+
+        assertEquals(individualDate, open.getDeadline());
+        verify(projectRepository, org.mockito.Mockito.never()).saveAll(any());
+    }
+
+    private Project project(ProjectStatus status) {
+        return Project.builder()
+                .status(status)
+                .createdBy(User.builder().firstName("Demo").lastName("Company").build())
+                .build();
     }
 
     @Test

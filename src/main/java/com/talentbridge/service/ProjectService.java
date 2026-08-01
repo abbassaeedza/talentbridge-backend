@@ -2,6 +2,9 @@ package com.talentbridge.service;
 
 import com.talentbridge.config.AppProperties;
 import com.talentbridge.dto.request.ProjectRequest;
+import com.talentbridge.dto.request.GlobalDeadlineRequest;
+import com.talentbridge.dto.response.GlobalDeadlinePreviewResponse;
+import com.talentbridge.dto.response.GlobalDeadlineResponse;
 import com.talentbridge.dto.response.PageResponse;
 import com.talentbridge.dto.response.ProjectResponse;
 import com.talentbridge.entity.*;
@@ -155,20 +158,60 @@ public class ProjectService {
     }
 
     @Transactional
-    public void setGlobalDeadline(LocalDateTime deadline) {
-        ApplicationSettings settings = applicationSettingsRepository.findById(ApplicationSettings.ID)
-                .orElseGet(ApplicationSettings::new);
-        settings.setGlobalDeadline(deadline);
-        applicationSettingsRepository.save(settings);
-
-        List<Project> open = projectRepository.findByStatus(ProjectStatus.OPEN, Pageable.unpaged()).getContent();
-        open.forEach(p -> p.setDeadline(deadline));
-        projectRepository.saveAll(open);
+    public GlobalDeadlinePreviewResponse previewGlobalDeadline(GlobalDeadlineRequest req) {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        counts.put(ProjectStatus.PENDING_REVIEW.name(), 0L);
+        counts.put(ProjectStatus.OPEN.name(), 0L);
+        counts.put(ProjectStatus.ASSIGNED.name(), 0L);
+        long excluded = 0;
+        for (Project project : projectRepository.findAll()) {
+            if (isFinished(project)) {
+                excluded++;
+            } else if (counts.containsKey(project.getStatus().name())) {
+                counts.compute(project.getStatus().name(), (ignored, count) -> count + 1);
+            }
+        }
+        return new GlobalDeadlinePreviewResponse(counts, excluded);
     }
 
-    public Optional<LocalDateTime> getGlobalDeadline() {
+    @Transactional
+    public void setGlobalDeadline(GlobalDeadlineRequest req) {
+        ApplicationSettings settings = applicationSettingsRepository.findById(ApplicationSettings.ID)
+                .orElseGet(ApplicationSettings::new);
+        settings.setGlobalDeadlineEnabled(Boolean.TRUE.equals(req.getEnabled()));
+        if (Boolean.TRUE.equals(req.getEnabled())) settings.setGlobalDeadline(req.getDeadline());
+        applicationSettingsRepository.save(settings);
+        if (!Boolean.TRUE.equals(req.getEnabled())) return;
+
+        List<Project> affected = projectRepository.findAll().stream()
+                .filter(project -> isEligibleForGlobalDeadline(project) && !isFinished(project))
+                .toList();
+        affected.forEach(project -> project.setDeadline(req.getDeadline()));
+        if (!affected.isEmpty()) projectRepository.saveAll(affected);
+    }
+
+    public GlobalDeadlineResponse getGlobalDeadline() {
         return applicationSettingsRepository.findById(ApplicationSettings.ID)
-                .map(ApplicationSettings::getGlobalDeadline);
+                .map(settings -> new GlobalDeadlineResponse(
+                        settings.isGlobalDeadlineEnabled(), settings.getGlobalDeadline()))
+                .orElseGet(() -> new GlobalDeadlineResponse(false, null));
+    }
+
+    private boolean isEligibleForGlobalDeadline(Project project) {
+        return project.getStatus() == ProjectStatus.PENDING_REVIEW
+                || project.getStatus() == ProjectStatus.OPEN
+                || project.getStatus() == ProjectStatus.ASSIGNED;
+    }
+
+    private boolean isFinished(Project project) {
+        if (project.getStatus() == ProjectStatus.CLOSED) return true;
+        Party party = project.getAssignedParty();
+        if (party == null) return false;
+        if (party.getStatus() == PartyStatus.SUBMITTED || party.getStatus() == PartyStatus.COMPLETED) return true;
+        Submission submission = party.getSubmission();
+        return submission != null && (submission.getStatus() == SubmissionStatus.SUBMITTED
+                || submission.getStatus() == SubmissionStatus.UNDER_EVALUATION
+                || submission.getStatus() == SubmissionStatus.EVALUATED);
     }
 
     @Transactional
