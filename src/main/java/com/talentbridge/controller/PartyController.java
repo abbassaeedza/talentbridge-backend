@@ -57,12 +57,12 @@ public class PartyController {
     }
 
     @GetMapping("/{partyId}")
-    public PartyResponse getById(@PathVariable UUID partyId) {
-        return partyService.getById(partyId);
+    public PartyResponse getById(@PathVariable UUID partyId, @AuthenticationPrincipal UUID viewerId) {
+        return partyService.getById(partyId, viewerId);
     }
 
     @GetMapping("/all")
-    @PreAuthorize("hasAnyRole('COORDINATOR','PARTY_SUPERVISOR','PROJECT_SUPERVISOR')")
+    @PreAuthorize("hasRole('COORDINATOR')")
     public List<PartyResponse> getAll() {
         return partyService.getAll();
     }

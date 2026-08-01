@@ -54,14 +54,20 @@ public class ProjectController {
     }
 
     @GetMapping("/{id}")
-    public ProjectResponse getById(@PathVariable UUID id) {
-        return projectService.getById(id);
+    public ProjectResponse getById(@PathVariable UUID id, @AuthenticationPrincipal UUID viewerId) {
+        return projectService.getById(id, viewerId);
     }
 
     @GetMapping("/my")
     @PreAuthorize("hasRole('COMPANY')")
     public List<ProjectResponse> getMyProjects(@AuthenticationPrincipal UUID userId) {
         return projectService.getByCreator(userId);
+    }
+
+    @GetMapping("/supervised")
+    @PreAuthorize("hasRole('PROJECT_SUPERVISOR')")
+    public List<ProjectResponse> getSupervised(@AuthenticationPrincipal UUID userId) {
+        return projectService.getSupervised(userId);
     }
 
     @PutMapping("/{id}")

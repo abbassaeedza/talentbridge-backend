@@ -35,7 +35,12 @@ public class AuthService {
 
     @Transactional
     public AuthResponse register(RegisterRequest req) {
-        if (userRepository.existsByEmail(req.getEmail()))
+        if (req.getRole() == UserRole.PROJECT_SUPERVISOR)
+            throw new BadRequestException("Project supervisors must register with an invitation");
+        if (req.getRole() != UserRole.STUDENT && req.getRole() != UserRole.COMPANY
+                && req.getRole() != UserRole.PARTY_SUPERVISOR)
+            throw new BadRequestException("This role cannot register publicly");
+        if (userRepository.existsByEmailIgnoreCase(req.getEmail()))
             throw new BadRequestException("Email already registered");
 
         User user = User.builder()
@@ -124,9 +129,17 @@ public class AuthService {
                         .id(user.getId()).email(user.getEmail())
                         .firstName(user.getFirstName()).lastName(user.getLastName())
                         .role(user.getRole()).status(user.getStatus())
-                        .onboardingComplete(user.getRole() != UserRole.STUDENT || user.getStudentProfile() != null)
+                        .onboardingComplete(onboardingComplete(user))
                         .githubUsername(user.getGithubUsername())
                         .build())
                 .build();
+    }
+
+    private boolean onboardingComplete(User user) {
+        return switch (user.getRole()) {
+            case STUDENT -> user.getStudentProfile() != null;
+            case PARTY_SUPERVISOR -> user.getSupervisorProfile() != null;
+            default -> true;
+        };
     }
 }

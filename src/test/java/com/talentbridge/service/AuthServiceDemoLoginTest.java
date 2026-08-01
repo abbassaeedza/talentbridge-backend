@@ -1,10 +1,12 @@
 package com.talentbridge.service;
 
 import com.talentbridge.dto.response.AuthResponse;
+import com.talentbridge.dto.request.RegisterRequest;
 import com.talentbridge.entity.User;
 import com.talentbridge.enums.UserRole;
 import com.talentbridge.enums.UserStatus;
 import com.talentbridge.exception.ResourceNotFoundException;
+import com.talentbridge.exception.BadRequestException;
 import com.talentbridge.repository.CompanyProfileRepository;
 import com.talentbridge.repository.ScorecardRepository;
 import com.talentbridge.repository.UserRepository;
@@ -77,5 +79,39 @@ class AuthServiceDemoLoginTest {
 
         assertThrows(ResourceNotFoundException.class, service::demoLogin);
         verifyNoInteractions(userRepository);
+    }
+
+    @Test
+    void rejectsPublicProjectSupervisorRegistration() {
+        RegisterRequest request = new RegisterRequest();
+        request.setEmail("supervisor@example.com");
+        request.setPassword("password123");
+        request.setFirstName("Project");
+        request.setLastName("Supervisor");
+        request.setRole(UserRole.PROJECT_SUPERVISOR);
+
+        BadRequestException error = assertThrows(BadRequestException.class,
+                () -> service.register(request));
+
+        assertEquals("Project supervisors must register with an invitation", error.getMessage());
+        verifyNoInteractions(passwordEncoder, tokenProvider, notificationService,
+                companyProfileRepository, scorecardRepository);
+    }
+
+    @Test
+    void rejectsPublicCoordinatorRegistration() {
+        RegisterRequest request = new RegisterRequest();
+        request.setEmail("coordinator@example.com");
+        request.setPassword("password123");
+        request.setFirstName("Coordinator");
+        request.setLastName("User");
+        request.setRole(UserRole.COORDINATOR);
+
+        BadRequestException error = assertThrows(BadRequestException.class,
+                () -> service.register(request));
+
+        assertEquals("This role cannot register publicly", error.getMessage());
+        verifyNoInteractions(passwordEncoder, tokenProvider, notificationService,
+                companyProfileRepository, scorecardRepository);
     }
 }

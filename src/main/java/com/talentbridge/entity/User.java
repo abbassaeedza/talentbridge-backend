@@ -35,5 +35,9 @@ public class User extends BaseEntity {
     @JsonIgnoreProperties("user")   // ← breaks the User→CompanyProfile→User loop
     private CompanyProfile companyProfile;
 
+    @OneToOne(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    @JsonIgnoreProperties("user")
+    private SupervisorProfile supervisorProfile;
+
     public String getFullName() { return firstName + " " + lastName; }
 }

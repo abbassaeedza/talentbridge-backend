@@ -23,6 +23,8 @@ public class ProjectResponse {
     private UUID companyId;
     private String projectSupervisorName;
     private UUID projectSupervisorId;
+    private UUID assignedPartyId;
+    private String assignedPartyName;
     private String createdByName;
     private long partyApplicationCount;
     private String projectField;

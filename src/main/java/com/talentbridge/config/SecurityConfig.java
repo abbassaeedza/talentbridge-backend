@@ -30,6 +30,7 @@ public class SecurityConfig {
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(a -> a
                 .requestMatchers("/api/auth/**").permitAll()
+                .requestMatchers("/api/project-supervisor-invitations/**").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .requestMatchers("/api/users/me").authenticated()
                 .anyRequest().hasAuthority("APPROVED_USER"))

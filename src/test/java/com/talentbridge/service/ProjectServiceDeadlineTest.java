@@ -8,6 +8,10 @@ import com.talentbridge.entity.Project;
 import com.talentbridge.entity.User;
 import com.talentbridge.enums.ProjectStatus;
 import com.talentbridge.enums.ApplicationStatus;
+import com.talentbridge.enums.UserRole;
+import com.talentbridge.enums.UserStatus;
+import com.talentbridge.dto.request.ProjectRequest;
+import com.talentbridge.exception.BadRequestException;
 import com.talentbridge.repository.ApplicationRepository;
 import com.talentbridge.repository.ApplicationSettingsRepository;
 import com.talentbridge.repository.PartyRepository;
@@ -133,5 +137,32 @@ class ProjectServiceDeadlineTest {
 
         assertEquals(ApplicationStatus.ASSIGNED, selected.getStatus());
         assertEquals(ApplicationStatus.WITHDRAWN, other.getStatus());
+    }
+
+    @Test
+    void rejectsAProjectSupervisorWhoDoesNotHaveTheProjectSupervisorRole() {
+        UUID creatorId = UUID.randomUUID();
+        UUID supervisorId = UUID.randomUUID();
+        User creator = User.builder()
+                .firstName("Company").lastName("Owner")
+                .role(UserRole.COMPANY).status(UserStatus.APPROVED)
+                .build();
+        creator.setId(creatorId);
+        User notASupervisor = User.builder()
+                .firstName("Wrong").lastName("Role")
+                .role(UserRole.COMPANY).status(UserStatus.APPROVED)
+                .build();
+        notASupervisor.setId(supervisorId);
+        ProjectRequest request = new ProjectRequest();
+        request.setTitle("Project");
+        request.setDescription("Project description");
+        request.setProjectSupervisorId(supervisorId);
+        when(userRepository.findById(creatorId)).thenReturn(Optional.of(creator));
+        when(userRepository.findById(supervisorId)).thenReturn(Optional.of(notASupervisor));
+
+        BadRequestException error = assertThrows(BadRequestException.class,
+                () -> projectService.create(creatorId, request));
+
+        assertEquals("Project supervisor must be an approved project supervisor for this company", error.getMessage());
     }
 }

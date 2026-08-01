@@ -25,6 +25,7 @@ public class UserResponse {
     private LocalDateTime createdAt;
     private StudentProfileDto studentProfile;
     private CompanyProfileDto companyProfile;
+    private SupervisorProfileResponse supervisorProfile;
     @JsonInclude(JsonInclude.Include.NON_NULL)
     private Long suspensionCount;
     @JsonInclude(JsonInclude.Include.NON_NULL)

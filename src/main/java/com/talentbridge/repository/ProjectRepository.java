@@ -20,6 +20,7 @@ public interface ProjectRepository extends JpaRepository<Project, UUID> {
 
     Page<Project> findByStatus(ProjectStatus status, Pageable pageable);
     List<Project> findByCreatedById(UUID userId);
+    List<Project> findByProjectSupervisorId(UUID supervisorId);
     @Query("SELECT p FROM Project p WHERE p.status = 'OPEN' AND " +
             "(LOWER(p.title) LIKE LOWER(CONCAT('%',:q,'%')) OR " +
             "LOWER(p.description) LIKE LOWER(CONCAT('%',:q,'%')))")

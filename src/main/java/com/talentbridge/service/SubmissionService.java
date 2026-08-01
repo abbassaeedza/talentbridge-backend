@@ -100,8 +100,8 @@ public class SubmissionService {
             || project.getCreatedBy().getId().equals(viewerId)
             || (project.getProjectSupervisor() != null
                 && project.getProjectSupervisor().getId().equals(viewerId))
-            || submissions.stream().anyMatch(submission -> submission.getParty().getSupervisor() != null
-                && submission.getParty().getSupervisor().getId().equals(viewerId));
+            || (project.getAssignedParty() != null && project.getAssignedParty().getSupervisor() != null
+                && project.getAssignedParty().getSupervisor().getId().equals(viewerId));
         if (!allowed) throw new ForbiddenException("You cannot view submissions for this project");
         return submissions;
     }

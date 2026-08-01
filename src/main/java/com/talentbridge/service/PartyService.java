@@ -281,7 +281,18 @@ public class PartyService {
                 .orElseThrow(() -> new ResourceNotFoundException("You are not in any party yet")));
     }
 
-    public PartyResponse getById(UUID id) { return toResponse(getPartyOrThrow(id)); }
+    public PartyResponse getById(UUID id, UUID viewerId) {
+        Party party = getPartyOrThrow(id);
+        User viewer = getUser(viewerId);
+        boolean allowed = viewer.getRole() == UserRole.COORDINATOR
+                || party.getMembers().stream().anyMatch(member -> member.getId().equals(viewerId))
+                || (party.getSupervisor() != null && party.getSupervisor().getId().equals(viewerId))
+                || (party.getAssignedProject() != null && party.getAssignedProject().getProjectSupervisor() != null
+                    && party.getAssignedProject().getProjectSupervisor().getId().equals(viewerId))
+                || (party.getAssignedProject() != null && party.getAssignedProject().getCreatedBy().getId().equals(viewerId));
+        if (!allowed) throw new ForbiddenException("You cannot view this party");
+        return toResponse(party);
+    }
 
     public List<PartyResponse> getAll() {
         return partyRepository.findAll().stream().map(this::toResponse).collect(Collectors.toList());

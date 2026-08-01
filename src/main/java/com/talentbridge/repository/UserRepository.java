@@ -22,6 +22,7 @@ public interface UserRepository extends JpaRepository<User, UUID> {
 
     Optional<User> findByEmail(String email);
     boolean existsByEmail(String email);
+    boolean existsByEmailIgnoreCase(String email);
 
     // Page — used by UserService.getPendingUsers()
     Page<User> findByStatus(UserStatus status, Pageable pageable);

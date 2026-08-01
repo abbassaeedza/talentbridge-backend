@@ -11,6 +11,7 @@ import com.talentbridge.repository.ScorecardRepository;
 import com.talentbridge.repository.PartyRepository;
 import com.talentbridge.repository.ApplicationRepository;
 import com.talentbridge.repository.StudentProfileRepository;
+import com.talentbridge.repository.SupervisorProfileRepository;
 import com.talentbridge.repository.UserModerationEventRepository;
 import com.talentbridge.repository.UserRepository;
 import org.junit.jupiter.api.Test;
@@ -34,6 +35,7 @@ class UserServiceModerationTest {
 
     @Mock private UserRepository userRepository;
     @Mock private StudentProfileRepository studentProfileRepository;
+    @Mock private SupervisorProfileRepository supervisorProfileRepository;
     @Mock private ScorecardRepository scorecardRepository;
     @Mock private UserModerationEventRepository moderationEventRepository;
     @Mock private PartyRepository partyRepository;
@@ -99,6 +101,18 @@ class UserServiceModerationTest {
 
         assertThrows(com.talentbridge.exception.ForbiddenException.class,
                 () -> userService.getStudentProfile(studentId, companyId));
+    }
+
+    @Test
+    void deniesAPartySupervisorWhoDoesNotSuperviseTheStudentsParty() {
+        UUID supervisorId = UUID.randomUUID();
+        UUID studentId = UUID.randomUUID();
+        User supervisor = user(supervisorId, UserRole.PARTY_SUPERVISOR, UserStatus.APPROVED);
+        User student = user(studentId, UserRole.STUDENT, UserStatus.APPROVED);
+        when(userRepository.findById(supervisorId)).thenReturn(Optional.of(supervisor));
+        when(userRepository.findById(studentId)).thenReturn(Optional.of(student));
+        assertThrows(com.talentbridge.exception.ForbiddenException.class,
+                () -> userService.getStudentProfile(studentId, supervisorId));
     }
 
     @Test

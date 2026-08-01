@@ -1,8 +1,10 @@
 package com.talentbridge.service;
 
 import com.talentbridge.dto.request.StudentOnboardingRequest;
+import com.talentbridge.dto.request.SupervisorOnboardingRequest;
 import com.talentbridge.dto.response.PageResponse;
 import com.talentbridge.dto.response.UserResponse;
+import com.talentbridge.dto.response.SupervisorProfileResponse;
 import com.talentbridge.entity.*;
 import com.talentbridge.enums.NotificationType;
 import com.talentbridge.enums.ModerationEventType;
@@ -14,6 +16,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.UUID;
@@ -24,11 +27,13 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final StudentProfileRepository studentProfileRepository;
+    private final SupervisorProfileRepository supervisorProfileRepository;
     private final ScorecardRepository scorecardRepository;
     private final UserModerationEventRepository moderationEventRepository;
     private final PartyRepository partyRepository;
     private final ApplicationRepository applicationRepository;
     private final NotificationService notificationService;
+    private final FileStorageService fileStorageService;
 
     public User getById(UUID id) {
         return userRepository.findById(id)
@@ -45,8 +50,9 @@ public class UserService {
         if (student.getStatus() != UserStatus.APPROVED)
             throw new ForbiddenException("This student profile is not available");
         boolean allowed = switch (viewer.getRole()) {
+            case STUDENT -> studentId.equals(viewerId);
             case COMPANY -> applicationRepository.existsForCompanyAndStudent(viewerId, studentId);
-            case PARTY_SUPERVISOR -> partyRepository.existsByMemberId(studentId);
+            case PARTY_SUPERVISOR -> partyRepository.existsByStudentAndPartySupervisor(studentId, viewerId);
             case PROJECT_SUPERVISOR -> partyRepository.existsByStudentAndProjectSupervisor(studentId, viewerId);
             default -> false;
         };
@@ -71,6 +77,30 @@ public class UserService {
         profile.setPortfolioUrl(req.getPortfolioUrl());
         profile.setGpa(req.getGpa());
         return studentProfileRepository.save(profile);
+    }
+
+    @Transactional
+    public SupervisorProfile completeSupervisorOnboarding(UUID userId, SupervisorOnboardingRequest req) {
+        User user = getById(userId);
+        if (user.getRole() != UserRole.PARTY_SUPERVISOR) throw new ForbiddenException("Only party supervisors can complete this onboarding");
+        SupervisorProfile profile = supervisorProfileRepository.findByUserId(userId)
+                .orElse(SupervisorProfile.builder().user(user).build());
+        profile.setJobTitle(req.getJobTitle());
+        profile.setDepartment(req.getDepartment());
+        profile.setBio(req.getBio());
+        profile.setLinkedinUrl(req.getLinkedinUrl());
+        return supervisorProfileRepository.save(profile);
+    }
+
+    @Transactional
+    public SupervisorProfile uploadSupervisorProfilePhoto(UUID userId, MultipartFile file) {
+        User user = getById(userId);
+        if (user.getRole() != UserRole.PARTY_SUPERVISOR && user.getRole() != UserRole.PROJECT_SUPERVISOR)
+            throw new ForbiddenException("Only supervisors can upload a profile photo");
+        SupervisorProfile profile = supervisorProfileRepository.findByUserId(userId)
+                .orElseThrow(() -> new BadRequestException("Complete supervisor onboarding before uploading a profile photo"));
+        profile.setProfilePhotoUrl(fileStorageService.upload(file, "supervisor-profiles/" + userId));
+        return supervisorProfileRepository.save(profile);
     }
 
     @Transactional
@@ -211,6 +241,7 @@ public class UserService {
     public UserResponse toResponse(User user) {
         StudentProfile student = user.getStudentProfile();
         CompanyProfile company = user.getCompanyProfile();
+        SupervisorProfile supervisor = user.getSupervisorProfile();
 
         return UserResponse.builder()
                 .id(user.getId())
@@ -223,7 +254,7 @@ public class UserService {
                 .phoneNumber(user.getPhoneNumber())
                 .githubUsername(user.getGithubUsername())
                 .rejectionReason(user.getRejectionReason())
-                .onboardingComplete(user.getRole() != UserRole.STUDENT || student != null)
+                .onboardingComplete(user.getRole() != UserRole.STUDENT ? user.getRole() != UserRole.PARTY_SUPERVISOR || supervisor != null : student != null)
                 .createdAt(user.getCreatedAt())
                 .studentProfile(student == null ? null : UserResponse.StudentProfileDto.builder()
                         .id(student.getId())
@@ -248,6 +279,9 @@ public class UserService {
                         .country(company.getCountry())
                         .city(company.getCity())
                         .build())
+                .supervisorProfile(supervisor == null ? null : SupervisorProfileResponse.builder()
+                        .id(supervisor.getId()).jobTitle(supervisor.getJobTitle()).department(supervisor.getDepartment())
+                        .bio(supervisor.getBio()).linkedinUrl(supervisor.getLinkedinUrl()).profilePhotoUrl(supervisor.getProfilePhotoUrl()).build())
                 .build();
     }
 

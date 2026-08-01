@@ -26,6 +26,10 @@ public interface PartyRepository extends JpaRepository<Party, UUID> {
     @Query("SELECT CASE WHEN COUNT(p) > 0 THEN true ELSE false END FROM Party p JOIN p.members m WHERE m.id = :studentId")
     boolean existsByMemberId(@Param("studentId") UUID studentId);
 
+    @Query("SELECT CASE WHEN COUNT(p) > 0 THEN true ELSE false END FROM Party p JOIN p.members m WHERE m.id = :studentId AND p.supervisor.id = :supervisorId")
+    boolean existsByStudentAndPartySupervisor(@Param("studentId") UUID studentId,
+                                               @Param("supervisorId") UUID supervisorId);
+
     @Query("SELECT CASE WHEN COUNT(p) > 0 THEN true ELSE false END FROM Party p JOIN p.members m WHERE m.id = :studentId AND p.assignedProject.projectSupervisor.id = :supervisorId")
     boolean existsByStudentAndProjectSupervisor(@Param("studentId") UUID studentId,
                                                  @Param("supervisorId") UUID supervisorId);

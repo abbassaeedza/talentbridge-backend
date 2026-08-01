@@ -27,8 +27,9 @@ public class EvaluationController {
     }
 
     @GetMapping("/submission/{submissionId}")
-    public ResponseEntity<?> getBySubmission(@PathVariable UUID submissionId) {
-        return evaluationService.getBySubmissionId(submissionId)
+    public ResponseEntity<?> getBySubmission(@PathVariable UUID submissionId,
+                                             @AuthenticationPrincipal UUID viewerId) {
+        return evaluationService.getBySubmissionId(submissionId, viewerId)
             .map(ResponseEntity::ok)
             .orElse(ResponseEntity.notFound().build());
     }

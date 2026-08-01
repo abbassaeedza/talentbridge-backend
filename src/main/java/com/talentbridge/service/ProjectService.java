@@ -47,10 +47,7 @@ public class ProjectService {
 
         if (creator.getRole() == UserRole.COMPANY) project.setCompany(creator.getCompanyProfile());
         if (creator.getRole() == UserRole.COORDINATOR) project.setApprovedBy(creator);
-        if (req.getProjectSupervisorId() != null) {
-            project.setProjectSupervisor(userRepository.findById(req.getProjectSupervisorId())
-                    .orElseThrow(() -> new ResourceNotFoundException("Supervisor", req.getProjectSupervisorId().toString())));
-        }
+        if (req.getProjectSupervisorId() != null) project.setProjectSupervisor(validProjectSupervisor(creator, req.getProjectSupervisorId()));
         return toResponse(projectRepository.save(project));
     }
 
@@ -73,6 +70,7 @@ public class ProjectService {
         if (req.getDeadline() != null) project.setDeadline(req.getDeadline());
         if (req.getInternalName() != null) project.setInternalName(req.getInternalName());
         project.setProjectField(req.getProjectField());
+        if (req.getProjectSupervisorId() != null) project.setProjectSupervisor(validProjectSupervisor(project.getCreatedBy(), req.getProjectSupervisorId()));
 
         // Resubmit for review if it was archived/rejected
         if (project.getStatus() == ProjectStatus.ARCHIVED) {
@@ -246,11 +244,42 @@ public class ProjectService {
                 .stream().map(this::toResponse).collect(Collectors.toList());
     }
 
-    public ProjectResponse getById(UUID id) { return toResponse(getOrThrow(id)); }
+    public List<ProjectResponse> getSupervised(UUID supervisorId) {
+        return projectRepository.findByProjectSupervisorId(supervisorId).stream().map(this::toResponse).toList();
+    }
+
+    public ProjectResponse getById(UUID id, UUID viewerId) {
+        Project project = getOrThrow(id);
+        User viewer = userRepository.findById(viewerId)
+                .orElseThrow(() -> new ResourceNotFoundException("User", viewerId.toString()));
+        boolean related = viewer.getRole() == UserRole.COORDINATOR
+                || project.getStatus() == ProjectStatus.OPEN
+                || project.getCreatedBy().getId().equals(viewerId)
+                || (project.getProjectSupervisor() != null && project.getProjectSupervisor().getId().equals(viewerId))
+                || (project.getAssignedParty() != null && (project.getAssignedParty().getSupervisor() != null
+                    && project.getAssignedParty().getSupervisor().getId().equals(viewerId)
+                    || project.getAssignedParty().getMembers().stream().anyMatch(member -> member.getId().equals(viewerId))));
+        if (!related) throw new ForbiddenException("You cannot view this project");
+        return project.getCreatedBy().getId().equals(viewerId) || viewer.getRole() == UserRole.COORDINATOR
+                ? toResponse(project) : toPublicResponse(project);
+    }
 
     private Project getOrThrow(UUID id) {
         return projectRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Project", id.toString()));
+    }
+
+    private User validProjectSupervisor(User creator, UUID supervisorId) {
+        User supervisor = userRepository.findById(supervisorId)
+                .orElseThrow(() -> new ResourceNotFoundException("Supervisor", supervisorId.toString()));
+        boolean belongsToCompany = creator.getRole() == UserRole.COMPANY
+                && creator.getCompanyProfile() != null
+                && supervisor.getSupervisorProfile() != null
+                && supervisor.getSupervisorProfile().getCompany() != null
+                && creator.getCompanyProfile().getId().equals(supervisor.getSupervisorProfile().getCompany().getId());
+        if (supervisor.getRole() != UserRole.PROJECT_SUPERVISOR || supervisor.getStatus() != UserStatus.APPROVED || !belongsToCompany)
+            throw new BadRequestException("Project supervisor must be an approved project supervisor for this company");
+        return supervisor;
     }
 
     public ProjectResponse toResponse(Project p) {
@@ -264,6 +293,8 @@ public class ProjectService {
                 .companyId(p.getCompany() != null ? p.getCompany().getId() : null)
                 .projectSupervisorName(p.getProjectSupervisor() != null ? p.getProjectSupervisor().getFullName() : null)
                 .projectSupervisorId(p.getProjectSupervisor() != null ? p.getProjectSupervisor().getId() : null)
+                .assignedPartyId(p.getAssignedParty() != null ? p.getAssignedParty().getId() : null)
+                .assignedPartyName(p.getAssignedParty() != null ? p.getAssignedParty().getName() : null)
                 .createdByName(p.getCreatedBy().getFullName())
                 .partyApplicationCount(projectRepository.countApplicationsByProjectId(p.getId()))
                 .projectField(p.getProjectField())

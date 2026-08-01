@@ -69,8 +69,22 @@ public class EvaluationService {
         return evaluationReportRepository.save(report);
     }
 
-    public Optional<EvaluationReport> getBySubmissionId(UUID submissionId) {
-        return evaluationReportRepository.findBySubmissionId(submissionId);
+    public Optional<EvaluationReport> getBySubmissionId(UUID submissionId, UUID viewerId) {
+        Optional<EvaluationReport> result = evaluationReportRepository.findBySubmissionId(submissionId);
+        result.ifPresent(report -> {
+            User viewer = userRepository.findById(viewerId)
+                    .orElseThrow(() -> new ResourceNotFoundException("User", viewerId.toString()));
+            Submission submission = report.getSubmission();
+            Party party = submission.getParty();
+            Project project = submission.getProject();
+            boolean allowed = viewer.getRole() == com.talentbridge.enums.UserRole.COORDINATOR
+                    || party.getMembers().stream().anyMatch(member -> member.getId().equals(viewerId))
+                    || (party.getSupervisor() != null && party.getSupervisor().getId().equals(viewerId))
+                    || (project.getProjectSupervisor() != null && project.getProjectSupervisor().getId().equals(viewerId))
+                    || project.getCreatedBy().getId().equals(viewerId);
+            if (!allowed) throw new ForbiddenException("You cannot view this evaluation");
+        });
+        return result;
     }
 
     private EvaluationReport parseAndPersist(String aiJson, Submission submission,

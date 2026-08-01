@@ -1,16 +1,19 @@
 package com.talentbridge.controller;
 
 import com.talentbridge.dto.request.StudentOnboardingRequest;
+import com.talentbridge.dto.request.SupervisorOnboardingRequest;
 import com.talentbridge.dto.response.PageResponse;
 import com.talentbridge.dto.response.UserResponse;
 import com.talentbridge.entity.*;
 import com.talentbridge.enums.UserRole;
 import com.talentbridge.service.*;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.Map;
 import java.util.UUID;
@@ -38,6 +41,20 @@ public class UserController {
         return userService.completeOnboarding(userId, req);
     }
 
+    @PostMapping("/supervisor-onboarding")
+    @PreAuthorize("hasRole('PARTY_SUPERVISOR')")
+    public SupervisorProfile completeSupervisorOnboarding(@AuthenticationPrincipal UUID userId,
+            @Valid @RequestBody SupervisorOnboardingRequest req) {
+        return userService.completeSupervisorOnboarding(userId, req);
+    }
+
+    @PostMapping("/supervisor-profile-photo")
+    @PreAuthorize("hasAnyRole('PARTY_SUPERVISOR','PROJECT_SUPERVISOR')")
+    public SupervisorProfile uploadSupervisorProfilePhoto(@AuthenticationPrincipal UUID userId,
+                                                           @RequestParam MultipartFile file) {
+        return userService.uploadSupervisorProfilePhoto(userId, file);
+    }
+
     @GetMapping("/my/scorecard")
     @PreAuthorize("hasRole('STUDENT')")
     public Scorecard getMyScorecard(@AuthenticationPrincipal UUID userId) {
@@ -45,7 +62,8 @@ public class UserController {
     }
 
     @GetMapping("/{userId}/scorecard")
-    public Scorecard getScorecard(@PathVariable UUID userId) {
+    public Scorecard getScorecard(@PathVariable UUID userId, @AuthenticationPrincipal UUID viewerId) {
+        userService.getStudentProfile(userId, viewerId);
         return scorecardService.getByStudentId(userId);
     }
 
