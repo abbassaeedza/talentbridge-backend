@@ -25,7 +25,7 @@ public class DataSeeder implements ApplicationRunner {
     @Value("${app.seed.coordinator-email:coordinator@talentbridge.com}")
     private String coordinatorEmail;
 
-    @Value("${app.seed.coordinator-password:Admin1234!}")
+    @Value("${app.seed.coordinator-password:AdminTest123!!}")
     private String coordinatorPassword;
 
     @Value("${app.demo-mode:false}")
