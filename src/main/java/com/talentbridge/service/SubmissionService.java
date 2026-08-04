@@ -1,6 +1,7 @@
 package com.talentbridge.service;
 
 import com.talentbridge.entity.*;
+import com.talentbridge.dto.response.SubmissionResponse;
 import com.talentbridge.enums.*;
 import com.talentbridge.exception.*;
 import com.talentbridge.repository.*;
@@ -22,7 +23,7 @@ public class SubmissionService {
     private final NotificationService notificationService;
 
     @Transactional
-    public Submission saveDraft(UUID partyId, UUID leaderId, String repoUrl,
+    public SubmissionResponse saveDraft(UUID partyId, UUID leaderId, String repoUrl,
                                 String branch, List<MultipartFile> documents, String notes) {
         Party party = getPartyForUpdate(partyId);
         assertLeader(party, leaderId);
@@ -42,11 +43,11 @@ public class SubmissionService {
             documents.stream().filter(f -> !f.isEmpty())
                 .forEach(f -> sub.getDocumentUrls().add(fileStorageService.upload(f, "submissions/" + partyId)));
 
-        return submissionRepository.save(sub);
+        return toResponse(submissionRepository.save(sub));
     }
 
     @Transactional
-    public Submission finalSubmit(UUID partyId, UUID leaderId) {
+    public SubmissionResponse finalSubmit(UUID partyId, UUID leaderId) {
         Party party = getPartyForUpdate(partyId);
         assertLeader(party, leaderId);
         Project project = party.getAssignedProject();
@@ -68,11 +69,11 @@ public class SubmissionService {
             notificationService.notifySupervisorSubmission(party.getSupervisor(), party);
         if (party.getAssignedProject() != null && party.getAssignedProject().getProjectSupervisor() != null)
             notificationService.notifySupervisorSubmission(party.getAssignedProject().getProjectSupervisor(), party);
-        return submissionRepository.save(sub);
+        return toResponse(submissionRepository.save(sub));
     }
 
     @Transactional(readOnly = true)
-    public Submission getByPartyId(UUID partyId, UUID viewerId) {
+    public SubmissionResponse getByPartyId(UUID partyId, UUID viewerId) {
         Submission submission = submissionRepository.findByPartyId(partyId)
             .orElseThrow(() -> new ResourceNotFoundException("No submission for this party"));
         Party party = submission.getParty();
@@ -86,11 +87,11 @@ public class SubmissionService {
                 && project.getProjectSupervisor().getId().equals(viewerId))
             || project.getCreatedBy().getId().equals(viewerId);
         if (!allowed) throw new ForbiddenException("You cannot view this party's submission");
-        return submission;
+        return toResponse(submission);
     }
 
     @Transactional(readOnly = true)
-    public List<Submission> getByProjectId(UUID projectId, UUID viewerId) {
+    public List<SubmissionResponse> getByProjectId(UUID projectId, UUID viewerId) {
         Project project = projectRepository.findById(projectId)
             .orElseThrow(() -> new ResourceNotFoundException("Project", projectId.toString()));
         User viewer = userRepository.findById(viewerId)
@@ -103,7 +104,23 @@ public class SubmissionService {
             || (project.getAssignedParty() != null && project.getAssignedParty().getSupervisor() != null
                 && project.getAssignedParty().getSupervisor().getId().equals(viewerId));
         if (!allowed) throw new ForbiddenException("You cannot view submissions for this project");
-        return submissions;
+        return submissions.stream().map(this::toResponse).toList();
+    }
+
+    private SubmissionResponse toResponse(Submission submission) {
+        return SubmissionResponse.builder()
+                .id(submission.getId())
+                .partyId(submission.getParty().getId())
+                .partyName(submission.getParty().getName())
+                .projectId(submission.getProject().getId())
+                .projectTitle(submission.getProject().getTitle())
+                .repoUrl(submission.getRepoUrl())
+                .repoBranch(submission.getRepoBranch())
+                .documentUrls(submission.getDocumentUrls() == null ? List.of() : submission.getDocumentUrls())
+                .status(submission.getStatus())
+                .submittedAt(submission.getSubmittedAt())
+                .notes(submission.getNotes())
+                .build();
     }
 
     private Party getPartyForUpdate(UUID id) {

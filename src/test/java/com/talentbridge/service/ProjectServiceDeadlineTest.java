@@ -225,4 +225,24 @@ class ProjectServiceDeadlineTest {
 
         assertEquals("Project supervisor must be an approved project supervisor for this company", error.getMessage());
     }
+
+    @Test
+    void companyCanSaveANewProjectAsDraft() {
+        UUID creatorId = UUID.randomUUID();
+        User creator = User.builder()
+                .firstName("Company").lastName("Owner")
+                .role(UserRole.COMPANY).status(UserStatus.APPROVED)
+                .build();
+        creator.setId(creatorId);
+        ProjectRequest request = new ProjectRequest();
+        request.setTitle("Draft project");
+        request.setDescription("Draft description");
+        request.setSaveAsDraft(true);
+        when(userRepository.findById(creatorId)).thenReturn(Optional.of(creator));
+        when(projectRepository.save(any(Project.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        var response = projectService.create(creatorId, request);
+
+        assertEquals(ProjectStatus.DRAFT, response.getStatus());
+    }
 }

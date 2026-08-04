@@ -21,6 +21,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDateTime;
 import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -195,6 +196,32 @@ class SubmissionServiceDeadlineTest {
 
         assertThrows(ForbiddenException.class,
                 () -> submissionService.getByProjectId(projectId, viewerId));
+    }
+
+    @Test
+    void returnsCompactProjectSubmissionResponses() {
+        UUID projectId = UUID.randomUUID();
+        UUID partyId = UUID.randomUUID();
+        UUID viewerId = UUID.randomUUID();
+        User coordinator = user(viewerId, UserRole.COORDINATOR);
+        User owner = user(UUID.randomUUID(), UserRole.COMPANY);
+        Project project = Project.builder().title("Demo project").createdBy(owner).build();
+        project.setId(projectId);
+        Party party = Party.builder().name("Demo party").build();
+        party.setId(partyId);
+        Submission submission = Submission.builder()
+                .party(party).project(project).status(SubmissionStatus.DRAFT)
+                .documentUrls(List.of()).build();
+        when(projectRepository.findById(projectId)).thenReturn(Optional.of(project));
+        when(userRepository.findById(viewerId)).thenReturn(Optional.of(coordinator));
+        when(submissionRepository.findByProjectId(projectId)).thenReturn(List.of(submission));
+
+        var response = submissionService.getByProjectId(projectId, viewerId).get(0);
+
+        assertEquals(partyId, response.getPartyId());
+        assertEquals("Demo party", response.getPartyName());
+        assertEquals(projectId, response.getProjectId());
+        assertEquals("Demo project", response.getProjectTitle());
     }
 
     private User user(UUID id, UserRole role) {

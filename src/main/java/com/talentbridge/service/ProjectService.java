@@ -42,7 +42,9 @@ public class ProjectService {
                 .scope(req.getScope()).deliverables(req.getDeliverables())
                 .evaluationCriteria(req.getEvaluationCriteria())
                 .tools(req.getTools() != null ? req.getTools() : new ArrayList<>())
-                .status(creator.getRole() == UserRole.COORDINATOR ? ProjectStatus.OPEN : ProjectStatus.PENDING_REVIEW)
+                .status(creator.getRole() == UserRole.COORDINATOR
+                        ? ProjectStatus.OPEN
+                        : req.isSaveAsDraft() ? ProjectStatus.DRAFT : ProjectStatus.PENDING_REVIEW)
                 .createdBy(creator).deadline(req.getDeadline())
                 .internalName(req.getInternalName())
                 .projectField(req.getProjectField())
@@ -77,6 +79,8 @@ public class ProjectService {
 
         // Resubmit for review if it was archived/rejected
         if (project.getStatus() == ProjectStatus.ARCHIVED) {
+            project.setStatus(ProjectStatus.PENDING_REVIEW);
+        } else if (project.getStatus() == ProjectStatus.DRAFT && !req.isSaveAsDraft()) {
             project.setStatus(ProjectStatus.PENDING_REVIEW);
         }
 

@@ -23,6 +23,7 @@ public class ProjectRequest {
     private LocalDateTime deadline;
     private UUID projectSupervisorId;
     @Size(max = 100) private String projectField;
+    private boolean saveAsDraft;
 
     // Company-only internal reference name — not shown to students
     @Size(max = 100) private String internalName;

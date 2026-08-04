@@ -30,6 +30,10 @@ public class UserResponse {
     private Long suspensionCount;
     @JsonInclude(JsonInclude.Include.NON_NULL)
     private Long rejectionCount;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private UUID partyId;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String partyName;
 
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class StudentProfileDto {

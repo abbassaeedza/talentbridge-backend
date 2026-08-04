@@ -212,7 +212,7 @@ public class UserService {
 
     public List<UserResponse> getByRole(UserRole role) {
         return userRepository.findByRole(role).stream()
-                .map(this::toResponse)
+                .map(this::toCoordinatorResponse)
                 .toList();
     }
 
@@ -318,6 +318,12 @@ public class UserService {
                 .countByNormalizedEmailAndEventType(email, ModerationEventType.SUSPENDED));
         response.setRejectionCount(moderationEventRepository
                 .countByNormalizedEmailAndEventType(email, ModerationEventType.REJECTED));
+        if (user.getRole() == UserRole.STUDENT) {
+            partyRepository.findByMemberId(user.getId()).ifPresent(party -> {
+                response.setPartyId(party.getId());
+                response.setPartyName(party.getName());
+            });
+        }
         return response;
     }
 

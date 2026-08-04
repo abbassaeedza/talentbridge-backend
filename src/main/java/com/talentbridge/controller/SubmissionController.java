@@ -1,5 +1,5 @@
 package com.talentbridge.controller;
-import com.talentbridge.entity.Submission;
+import com.talentbridge.dto.response.SubmissionResponse;
 import com.talentbridge.service.SubmissionService;
 import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
@@ -17,7 +17,7 @@ public class SubmissionController {
 
     @PostMapping("/{partyId}/draft")
     @PreAuthorize("hasRole('STUDENT')")
-    public Submission saveDraft(
+    public SubmissionResponse saveDraft(
             @PathVariable UUID partyId, @AuthenticationPrincipal UUID leaderId,
             @RequestParam(required=false) @Size(max = 500) String repoUrl,
             @RequestParam(required=false) @Size(max = 100) String branch,
@@ -28,13 +28,13 @@ public class SubmissionController {
 
     @PostMapping("/{partyId}/submit")
     @PreAuthorize("hasRole('STUDENT')")
-    public Submission finalSubmit(@PathVariable UUID partyId,
+    public SubmissionResponse finalSubmit(@PathVariable UUID partyId,
                                   @AuthenticationPrincipal UUID leaderId) {
         return submissionService.finalSubmit(partyId, leaderId);
     }
 
     @GetMapping("/{partyId}")
-    public Submission getByParty(
+    public SubmissionResponse getByParty(
             @PathVariable UUID partyId,
             @AuthenticationPrincipal UUID viewerId) {
         return submissionService.getByPartyId(partyId, viewerId);
@@ -42,7 +42,7 @@ public class SubmissionController {
 
     @GetMapping("/project/{projectId}")
     @PreAuthorize("hasAnyRole('COORDINATOR','COMPANY','PROJECT_SUPERVISOR','PARTY_SUPERVISOR')")
-    public List<Submission> getByProject(
+    public List<SubmissionResponse> getByProject(
             @PathVariable UUID projectId,
             @AuthenticationPrincipal UUID viewerId) {
         return submissionService.getByProjectId(projectId, viewerId);
