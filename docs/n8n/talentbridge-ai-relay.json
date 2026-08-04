@@ -11,7 +11,7 @@
       "id": "f4bbbc13-4b94-4da7-a876-718948e010d1",
       "name": "TalentBridge Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2,
+      "typeVersion": 2.1,
       "position": [0, 0],
       "credentials": {
         "httpHeaderAuth": {
@@ -21,7 +21,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body ?? $json;\nconst operation = body.operation;\nif (!['chat', 'chat_guard', 'evaluation'].includes(operation)) throw new Error('Unsupported operation');\nif (typeof body.message !== 'string' || !body.message.trim()) throw new Error('message is required');\nconst history = Array.isArray(body.history) ? body.history.slice(-10).flatMap(item => {\n  if (!item || !['user', 'assistant'].includes(item.role) || typeof item.content !== 'string') return [];\n  return [{ role: item.role, content: item.content.slice(0, 4000) }];\n}) : [];\nconst system = typeof body.system === 'string' ? body.system.slice(0, 8000) : 'You are TalentBridge AI support.';\nconst maxTokens = Math.min(Math.max(Number(body.maxTokens) || 512, 1), 2048);\nreturn [{ json: { model: typeof body.model === 'string' ? body.model : 'gpt-4o-mini', maxTokens, messages: [{ role: 'system', content: system }, ...history, { role: 'user', content: body.message.trim().slice(0, 12000) }] } }];"
+        "jsCode": "const body = $json.body ?? $json;\nconst operation = body.operation;\nif (!['chat', 'chat_guard', 'evaluation'].includes(operation)) throw new Error('Unsupported operation');\nif (typeof body.system !== 'string' || !body.system.trim()) throw new Error('system is required');\nif (typeof body.message !== 'string' || !body.message.trim()) throw new Error('message is required');\nconst history = Array.isArray(body.history) ? body.history.slice(-10).flatMap(item => {\n  if (!item || !['user', 'assistant'].includes(item.role) || typeof item.content !== 'string' || !item.content.trim()) return [];\n  return [`${item.role}: ${item.content.trim().slice(0, 4000)}`];\n}) : [];\nconst message = body.message.trim().slice(0, 12000);\nconst prompt = [...history, `user: ${message}`].join('\\n');\nconst maxTokens = Math.min(Math.max(Math.trunc(Number(body.maxTokens)) || 512, 1), 2048);\nreturn [{ json: {\n  operation,\n  system: body.system.trim().slice(0, 8000),\n  prompt,\n  model: typeof body.model === 'string' && body.model.trim() ? body.model.trim() : 'gpt-4o-mini',\n  maxTokens,\n  temperature: operation === 'chat' ? 0.4 : 0\n} }];"
       },
       "id": "0e1a0f1c-f607-4d37-924b-2e013c0bc0f6",
       "name": "Prepare Input",
@@ -31,23 +31,44 @@
     },
     {
       "parameters": {
-        "resource": "chat",
-        "operation": "generate",
-        "model": "={{ $json.model }}",
-        "messages": "={{ $json.messages }}",
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
         "options": {
-          "maxTokens": "={{ $json.maxTokens }}"
+          "systemMessage": "={{ $json.system }}"
         }
       },
       "id": "484bf1f1-bec9-4ea6-85df-3fa90898209d",
-      "name": "OpenAI - Generate Chat Completion",
-      "type": "@n8n/n8n-nodes-langchain.openAi",
-      "typeVersion": 1.8,
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
       "position": [480, 0]
     },
     {
       "parameters": {
-        "jsCode": "const message = $json.choices?.[0]?.message?.content ?? $json.message?.content ?? $json.message;\nif (typeof message !== 'string' || !message.trim()) throw new Error('OpenAI returned no message');\nreturn [{ json: { message: message.trim() } }];"
+        "model": {
+          "__rl": true,
+          "value": "={{ $('Prepare Input').item.json.model }}",
+          "mode": "id"
+        },
+        "options": {
+          "maxTokens": "={{ $('Prepare Input').item.json.maxTokens }}",
+          "temperature": "={{ $('Prepare Input').item.json.temperature }}"
+        }
+      },
+      "id": "0bbfcfa3-b0d8-4213-aa91-a84fea2fe01a",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [480, 240],
+      "credentials": {
+        "openAiApi": {
+          "name": "OpenAi - HelloForce"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = String($json.output ?? $json.text ?? $json.message?.content ?? '').trim();\nif (!raw) throw new Error('OpenAI returned no message');\nconst message = raw.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '').trim();\nreturn [{ json: { message } }];"
       },
       "id": "f11ce5e3-3765-4e71-9879-76b868f7f6b6",
       "name": "Normalize Response",
@@ -64,7 +85,7 @@
       "id": "5fe434af-5762-4c1f-8994-c63dd411cb47",
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.1,
+      "typeVersion": 1.4,
       "position": [960, 0]
     }
   ],
@@ -73,9 +94,12 @@
       "main": [[{ "node": "Prepare Input", "type": "main", "index": 0 }]]
     },
     "Prepare Input": {
-      "main": [[{ "node": "OpenAI - Generate Chat Completion", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "AI Agent", "type": "main", "index": 0 }]]
     },
-    "OpenAI - Generate Chat Completion": {
+    "OpenAI Chat Model": {
+      "ai_languageModel": [[{ "node": "AI Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "AI Agent": {
       "main": [[{ "node": "Normalize Response", "type": "main", "index": 0 }]]
     },
     "Normalize Response": {
