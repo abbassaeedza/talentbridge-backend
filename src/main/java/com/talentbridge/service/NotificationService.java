@@ -73,10 +73,19 @@ public class NotificationService {
     }
 
     public void notifyEvaluationComplete(Party party, EvaluationReport report) {
-        String msg = "Evaluation complete. Total score: " +
-                String.format("%.1f", report.getTotalScore()) + "/100.";
-        party.getMembers().forEach(m -> send(m, NotificationType.EVALUATION_COMPLETE,
-                "Evaluation Complete", msg, report.getId().toString(), "EVALUATION"));
+        party.getMembers().forEach(member -> {
+            double individualScore = report.getStudentScores().stream()
+                    .filter(score -> score.getStudent().getId().equals(member.getId()))
+                    .map(StudentEvaluationScore::getIndividualScore)
+                    .findFirst()
+                    .orElse(report.getTotalScore());
+            String message = String.format(
+                    "Your score: %.1f/100. Team project score: %.1f/100.",
+                    individualScore,
+                    report.getTotalScore());
+            send(member, NotificationType.EVALUATION_COMPLETE,
+                    "Evaluation Complete", message, report.getId().toString(), "EVALUATION");
+        });
     }
 
     public void notifySupervisorSubmission(User supervisor, Party party) {

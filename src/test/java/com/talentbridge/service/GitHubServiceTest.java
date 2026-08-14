@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class GitHubServiceTest {
     @Test
@@ -37,5 +38,37 @@ class GitHubServiceTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    @Test
+    void rejectsAUsernameLookupWhenGitHubRejectsTheToken() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/user", exchange -> {
+            byte[] body = "{\"message\":\"Bad credentials\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(401, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        try {
+            GitHubService service = new GitHubService(new ObjectMapper());
+            ReflectionTestUtils.setField(service, "apiUrl", "http://localhost:" + server.getAddress().getPort());
+
+            var error = assertThrows(com.talentbridge.exception.BadRequestException.class,
+                    () -> service.getGitHubUsername("invalid-token"));
+
+            assertEquals("Could not verify the GitHub account. Please connect it again.", error.getMessage());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void rejectsAnEmptyOAuthTokenBeforeSavingAUser() {
+        GitHubService service = new GitHubService(new ObjectMapper());
+
+        assertThrows(com.talentbridge.exception.BadRequestException.class,
+                () -> service.getGitHubUsername(""));
     }
 }

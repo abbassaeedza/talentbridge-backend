@@ -3,6 +3,7 @@ package com.talentbridge.controller;
 import com.talentbridge.dto.request.StudentOnboardingRequest;
 import com.talentbridge.dto.request.SupervisorOnboardingRequest;
 import com.talentbridge.dto.response.PageResponse;
+import com.talentbridge.dto.response.ScorecardResponse;
 import com.talentbridge.dto.response.UserResponse;
 import com.talentbridge.entity.*;
 import com.talentbridge.enums.UserRole;
@@ -75,12 +76,12 @@ public class UserController {
 
     @GetMapping("/my/scorecard")
     @PreAuthorize("hasRole('STUDENT')")
-    public Scorecard getMyScorecard(@AuthenticationPrincipal UUID userId) {
+    public ScorecardResponse getMyScorecard(@AuthenticationPrincipal UUID userId) {
         return scorecardService.getByStudentId(userId);
     }
 
     @GetMapping("/{userId}/scorecard")
-    public Scorecard getScorecard(@PathVariable UUID userId, @AuthenticationPrincipal UUID viewerId) {
+    public ScorecardResponse getScorecard(@PathVariable UUID userId, @AuthenticationPrincipal UUID viewerId) {
         userService.getStudentProfile(userId, viewerId);
         return scorecardService.getByStudentId(userId);
     }
@@ -178,16 +179,13 @@ public class UserController {
 
     @PostMapping("/github/callback")
     @PreAuthorize("hasRole('STUDENT')")
-    public Map<String, String> githubCallback(
+    public UserResponse githubCallback(
             @AuthenticationPrincipal UUID userId,
             @RequestParam String code) {
         Map<String, String> tokenData = gitHubService.exchangeCodeForToken(code);
         String accessToken = tokenData.get("access_token");
         String username = gitHubService.getGitHubUsername(accessToken);
-        userService.linkGitHub(userId, username, accessToken);
-        return Map.of(
-            "message", "GitHub linked successfully",
-            "username", username != null ? username : "");
+        return userService.toResponse(userService.linkGitHub(userId, username, accessToken));
     }
 
     // ── Notifications ─────────────────────────────────────────────────────────

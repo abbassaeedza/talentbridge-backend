@@ -2,6 +2,7 @@ package com.talentbridge.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.talentbridge.exception.BadRequestException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,19 +44,35 @@ public class GitHubService {
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .build();
             JsonNode json = mapper.readTree(send(request));
-            return Map.of("access_token", json.path("access_token").asText());
+            String accessToken = json.path("access_token").asText();
+            if (accessToken.isBlank()) {
+                log.warn("GitHub rejected the OAuth code: {}", json.path("error").asText("unknown_error"));
+                throw new BadRequestException("GitHub authorization failed. Please connect your account again.");
+            }
+            return Map.of("access_token", accessToken);
+        } catch (BadRequestException e) {
+            throw e;
         } catch (Exception e) {
             log.error("GitHub token exchange failed", e);
-            throw new RuntimeException("GitHub OAuth failed: " + e.getMessage(), e);
+            throw new BadRequestException("GitHub authorization failed. Please connect your account again.");
         }
     }
 
     public String getGitHubUsername(String accessToken) {
+        if (accessToken == null || accessToken.isBlank()) {
+            throw new BadRequestException("GitHub did not return an access token");
+        }
         try {
-            return mapper.readTree(get(apiUrl + "/user", accessToken)).path("login").asText();
+            String username = mapper.readTree(get(apiUrl + "/user", accessToken)).path("login").asText();
+            if (username.isBlank()) {
+                throw new BadRequestException("GitHub did not return an account username");
+            }
+            return username;
+        } catch (BadRequestException e) {
+            throw e;
         } catch (Exception e) {
-            log.error("Could not fetch GitHub username", e);
-            return null;
+            log.warn("GitHub username verification failed: {}", e.getMessage());
+            throw new BadRequestException("Could not verify the GitHub account. Please connect it again.");
         }
     }
 

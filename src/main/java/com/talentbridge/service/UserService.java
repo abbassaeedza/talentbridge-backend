@@ -258,8 +258,12 @@ public class UserService {
 
     @Transactional
     public User linkGitHub(UUID userId, String githubUsername, String accessToken) {
+        if (githubUsername == null || githubUsername.isBlank()
+                || accessToken == null || accessToken.isBlank()) {
+            throw new BadRequestException("A verified GitHub account is required");
+        }
         User user = getById(userId);
-        user.setGithubUsername(githubUsername);
+        user.setGithubUsername(githubUsername.trim());
         user.setGithubAccessToken(accessToken);
         return userRepository.save(user);
     }

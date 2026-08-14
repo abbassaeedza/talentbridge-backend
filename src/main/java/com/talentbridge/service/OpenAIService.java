@@ -55,8 +55,8 @@ public class OpenAIService {
             Evaluate a student team's GitHub repository against their project brief.
             Return ONLY a valid JSON object - no markdown fences, no preamble:
             {
-              "aiDetectionScore": <0-100>,
-              "aiDetectionNotes": "<reasoning>",
+              "aiDetectionScore": <0-100 authenticity confidence, where 100 means likely human-written>,
+              "aiDetectionNotes": "<evidence-based reasoning about likely human or AI authorship>",
               "codeQualityScore": <0-100>,
               "codeQualityNotes": "<notes>",
               "functionalityScore": <0-100>,

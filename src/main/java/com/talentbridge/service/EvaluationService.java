@@ -2,6 +2,7 @@ package com.talentbridge.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.talentbridge.dto.response.EvaluationReportResponse;
 import com.talentbridge.entity.*;
 import com.talentbridge.enums.SubmissionStatus;
 import com.talentbridge.exception.*;
@@ -27,7 +28,7 @@ public class EvaluationService {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Transactional
-    public EvaluationReport triggerEvaluation(UUID submissionId, UUID coordinatorId) {
+    public EvaluationReportResponse triggerEvaluation(UUID submissionId, UUID coordinatorId) {
         Submission submission = submissionRepository.findById(submissionId)
             .orElseThrow(() -> new ResourceNotFoundException("Submission", submissionId.toString()));
         User coordinator = userRepository.findById(coordinatorId)
@@ -57,21 +58,47 @@ public class EvaluationService {
         submissionRepository.save(submission);
         notificationService.notifyEvaluationComplete(party, report);
         log.info("Evaluation complete. Score: {}", report.getTotalScore());
-        return report;
+        return EvaluationReportResponse.from(report);
     }
 
     @Transactional
-    public EvaluationReport finalizeReport(UUID reportId, UUID coordinatorId) {
+    public EvaluationReportResponse finalizeReport(UUID reportId, UUID coordinatorId) {
         EvaluationReport report = evaluationReportRepository.findById(reportId)
             .orElseThrow(() -> new ResourceNotFoundException("EvaluationReport", reportId.toString()));
         if (report.isFinalized()) throw new BadRequestException("Already finalized");
         report.setFinalized(true);
-        return evaluationReportRepository.save(report);
+        return EvaluationReportResponse.from(evaluationReportRepository.save(report));
     }
 
-    public Optional<EvaluationReport> getBySubmissionId(UUID submissionId, UUID viewerId) {
-        Optional<EvaluationReport> result = evaluationReportRepository.findBySubmissionId(submissionId);
-        result.ifPresent(report -> {
+    @Transactional
+    public EvaluationReportResponse reevaluate(UUID reportId, UUID coordinatorId) {
+        EvaluationReport report = evaluationReportRepository.findById(reportId)
+                .orElseThrow(() -> new ResourceNotFoundException("EvaluationReport", reportId.toString()));
+        if (report.isFinalized()) {
+            throw new BadRequestException("A finalized report cannot be reevaluated");
+        }
+
+        Submission submission = report.getSubmission();
+        Party party = submission.getParty();
+        String token = party.getLeader().getGithubAccessToken();
+        GitHubService.ContributorData contributors =
+                gitHubService.fetchContributorData(submission.getRepoUrl(), token);
+
+        report.getStudentScores().clear();
+        report.getStudentScores().addAll(buildStudentScores(report, party, contributors.commitCounts()));
+        report.setEvaluatedAt(LocalDateTime.now());
+        EvaluationReport saved = evaluationReportRepository.save(report);
+
+        party.getMembers().forEach(member ->
+                scorecardService.addEntry(member, submission.getProject(), saved));
+        notificationService.notifyEvaluationComplete(party, saved);
+        log.info("Evaluation contributions refreshed. Score: {}", saved.getTotalScore());
+        return EvaluationReportResponse.from(saved);
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<EvaluationReportResponse> getBySubmissionId(UUID submissionId, UUID viewerId) {
+        return evaluationReportRepository.findBySubmissionId(submissionId).map(report -> {
             User viewer = userRepository.findById(viewerId)
                     .orElseThrow(() -> new ResourceNotFoundException("User", viewerId.toString()));
             Submission submission = report.getSubmission();
@@ -83,8 +110,8 @@ public class EvaluationService {
                     || (project.getProjectSupervisor() != null && project.getProjectSupervisor().getId().equals(viewerId))
                     || project.getCreatedBy().getId().equals(viewerId);
             if (!allowed) throw new ForbiddenException("You cannot view this evaluation");
+            return EvaluationReportResponse.from(report);
         });
-        return result;
     }
 
     private EvaluationReport parseAndPersist(String aiJson, Submission submission,
@@ -109,29 +136,50 @@ public class EvaluationService {
                 .overallSummary(r.path("overallSummary").asText(""))
                 .finalized(false).build());
 
-            int totalCommits = commitMap.values().stream().mapToInt(Integer::intValue).sum();
-            List<StudentEvaluationScore> scores = new ArrayList<>();
-            for (User member : party.getMembers()) {
-                String gh = member.getGithubUsername() != null ? member.getGithubUsername()
-                    : member.getEmail().split("@")[0];
-                int commits = commitMap.getOrDefault(gh, 0);
-                double pct = totalCommits > 0 ? (commits * 100.0 / totalCommits) : 0;
-                double expectedPct = 100.0 / party.getMembers().size();
-                double factor = pct / expectedPct;
-                double base = report.getTotalScore() != null ? report.getTotalScore() : 0;
-                double individual = Math.min(100, Math.max(0, base * (0.85 + Math.min(factor, 1.3) * 0.15)));
-                scores.add(StudentEvaluationScore.builder()
-                    .evaluationReport(report).student(member).totalCommits(commits)
-                    .contributionPercentage(Math.round(pct * 10.0) / 10.0)
-                    .individualScore(Math.round(individual * 10.0) / 10.0)
-                    .performanceNotes(String.format("%d commits (%.1f%%). Score: %.1f/100.", commits, pct, individual))
-                    .build());
-            }
-            report.setStudentScores(scores);
+            report.setStudentScores(buildStudentScores(report, party, commitMap));
             return evaluationReportRepository.save(report);
         } catch (Exception e) {
             log.error("Failed to parse AI evaluation: {}", aiJson, e);
             throw new RuntimeException("Could not parse evaluation response: " + e.getMessage(), e);
         }
+    }
+
+    private List<StudentEvaluationScore> buildStudentScores(EvaluationReport report, Party party,
+                                                              Map<String, Integer> commitMap) {
+        Map<String, Integer> normalizedCommits = new HashMap<>();
+        commitMap.forEach((username, commits) -> {
+            if (username != null && commits != null) {
+                normalizedCommits.merge(username.trim().toLowerCase(Locale.ROOT), commits, Integer::sum);
+            }
+        });
+        int totalCommits = normalizedCommits.values().stream().mapToInt(Integer::intValue).sum();
+        List<StudentEvaluationScore> scores = new ArrayList<>();
+        for (User member : party.getMembers()) {
+            String githubUsername = member.getGithubUsername();
+            boolean githubConnected = githubUsername != null && !githubUsername.isBlank();
+            int commits = githubConnected
+                    ? normalizedCommits.getOrDefault(githubUsername.trim().toLowerCase(Locale.ROOT), 0)
+                    : 0;
+            double pct = totalCommits > 0 ? commits * 100.0 / totalCommits : 0;
+            double expectedPct = 100.0 / party.getMembers().size();
+            double factor = pct / expectedPct;
+            double base = report.getTotalScore() != null ? report.getTotalScore() : 0;
+            double individual = Math.min(100,
+                    Math.max(0, base * (0.85 + Math.min(factor, 1.3) * 0.15)));
+            double roundedPct = Math.round(pct * 10.0) / 10.0;
+            double roundedIndividual = Math.round(individual * 10.0) / 10.0;
+            String notes = githubConnected
+                    ? String.format("%d commits (%.1f%%). Score: %.1f/100.", commits, roundedPct, roundedIndividual)
+                    : String.format("GitHub not connected. Contribution: 0%%. Score: %.1f/100.", roundedIndividual);
+            scores.add(StudentEvaluationScore.builder()
+                    .evaluationReport(report)
+                    .student(member)
+                    .totalCommits(commits)
+                    .contributionPercentage(roundedPct)
+                    .individualScore(roundedIndividual)
+                    .performanceNotes(notes)
+                    .build());
+        }
+        return scores;
     }
 }

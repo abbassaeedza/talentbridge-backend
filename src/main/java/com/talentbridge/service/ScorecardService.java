@@ -1,5 +1,6 @@
 package com.talentbridge.service;
 
+import com.talentbridge.dto.response.ScorecardResponse;
 import com.talentbridge.entity.*;
 import com.talentbridge.repository.*;
 import lombok.RequiredArgsConstructor;
@@ -14,8 +15,11 @@ import java.util.UUID;
 public class ScorecardService {
     private final ScorecardRepository scorecardRepository;
 
-    public Scorecard getByStudentId(UUID studentId) {
-        return scorecardRepository.findByStudentId(studentId).orElse(null);
+    @Transactional(readOnly = true)
+    public ScorecardResponse getByStudentId(UUID studentId) {
+        return scorecardRepository.findByStudentId(studentId)
+                .map(ScorecardResponse::from)
+                .orElse(null);
     }
 
     @Transactional
@@ -29,12 +33,23 @@ public class ScorecardService {
             .mapToDouble(StudentEvaluationScore::getIndividualScore).findFirst()
             .orElse(report.getTotalScore() != null ? report.getTotalScore() : 0.0);
 
-        sc.getEntries().add(ScorecardEntry.builder()
-            .scorecard(sc).project(project).evaluationReport(report).score(score).build());
+        ScorecardEntry entry = sc.getEntries().stream()
+                .filter(existing -> existing.getProject().getId().equals(project.getId()))
+                .findFirst()
+                .orElseGet(() -> {
+                    ScorecardEntry created = ScorecardEntry.builder()
+                            .scorecard(sc)
+                            .project(project)
+                            .build();
+                    sc.getEntries().add(created);
+                    return created;
+                });
+        entry.setEvaluationReport(report);
+        entry.setScore(score);
         sc.setTotalProjects(sc.getEntries().size());
         sc.setAverageScore(Math.round(sc.getEntries().stream()
             .mapToDouble(ScorecardEntry::getScore).average().orElse(0.0) * 10.0) / 10.0);
         scorecardRepository.save(sc);
-        log.info("Scorecard updated for {} — avg: {}", student.getEmail(), sc.getAverageScore());
+        log.info("Scorecard updated for {} - avg: {}", student.getEmail(), sc.getAverageScore());
     }
 }

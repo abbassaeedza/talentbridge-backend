@@ -1,5 +1,5 @@
 package com.talentbridge.controller;
-import com.talentbridge.entity.EvaluationReport;
+import com.talentbridge.dto.response.EvaluationReportResponse;
 import com.talentbridge.service.EvaluationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -14,16 +14,23 @@ public class EvaluationController {
 
     @PostMapping("/trigger/{submissionId}")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public EvaluationReport trigger(@PathVariable UUID submissionId,
-                                    @AuthenticationPrincipal UUID coordinatorId) {
+    public EvaluationReportResponse trigger(@PathVariable UUID submissionId,
+                                            @AuthenticationPrincipal UUID coordinatorId) {
         return evaluationService.triggerEvaluation(submissionId, coordinatorId);
     }
 
     @PutMapping("/{reportId}/finalize")
     @PreAuthorize("hasRole('COORDINATOR')")
-    public EvaluationReport finalize(@PathVariable UUID reportId,
-                                     @AuthenticationPrincipal UUID coordinatorId) {
+    public EvaluationReportResponse finalize(@PathVariable UUID reportId,
+                                             @AuthenticationPrincipal UUID coordinatorId) {
         return evaluationService.finalizeReport(reportId, coordinatorId);
+    }
+
+    @PostMapping("/{reportId}/reevaluate")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public EvaluationReportResponse reevaluate(@PathVariable UUID reportId,
+                                               @AuthenticationPrincipal UUID coordinatorId) {
+        return evaluationService.reevaluate(reportId, coordinatorId);
     }
 
     @GetMapping("/submission/{submissionId}")
