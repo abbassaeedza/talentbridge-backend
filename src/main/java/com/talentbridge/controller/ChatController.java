@@ -6,6 +6,7 @@ import com.talentbridge.dto.request.ChatRequest;
 import com.talentbridge.dto.response.ChatResponse;
 import com.talentbridge.repository.UserRepository;
 import com.talentbridge.service.OpenAIService;
+import com.talentbridge.service.ChatContextService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -18,15 +19,15 @@ import com.talentbridge.enums.UserRole;
 public class ChatController {
     private final OpenAIService openAIService;
     private final UserRepository userRepository;
+    private final ChatContextService chatContextService;
     private final ObjectMapper mapper;
 
     @PostMapping
     public ChatResponse chat(@AuthenticationPrincipal UUID userId,
                              @Valid @RequestBody ChatRequest req) {
         var user = userRepository.findById(userId).orElseThrow();
-        req.setContext(user.getRole() == UserRole.COMPANY
-                ? "COMPANY_PROJECT_CREATION"
-                : "STUDENT_PROJECT_INQUIRY");
+        req.setContext(user.getRole().name());
+        req.setAppContext(chatContextService.build(user));
         String raw = openAIService.chat(req);
         String message = raw;
         Map<String, Object> projectDraft = null;

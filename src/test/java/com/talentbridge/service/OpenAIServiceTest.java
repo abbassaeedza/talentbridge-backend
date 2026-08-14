@@ -63,7 +63,8 @@ class OpenAIServiceTest {
         });
         ChatRequest request = new ChatRequest();
         request.setMessage("Explain the scope");
-        request.setContext("STUDENT_PROJECT_INQUIRY");
+        request.setContext("STUDENT");
+        request.setAppContext("Project counts: total=4, assigned=1, openAvailable=3");
 
         String result = service.chat(request);
 
@@ -137,18 +138,21 @@ class OpenAIServiceTest {
         AtomicReference<String> method = new AtomicReference<>();
         AtomicReference<String> secret = new AtomicReference<>();
         AtomicReference<JsonNode> body = new AtomicReference<>();
+        AtomicReference<String> guardSystem = new AtomicReference<>();
         server.createContext("/webhook/talentbridge-ai", exchange -> {
             method.set(exchange.getRequestMethod());
             secret.set(exchange.getRequestHeaders().getFirst("X-TB-Secret"));
             body.set(new ObjectMapper().readTree(exchange.getRequestBody()));
-            respond(exchange, 200, "chat_guard".equals(body.get().path("operation").asText())
-                    ? "{\"message\":\"ALLOW\"}"
+            boolean guard = "chat_guard".equals(body.get().path("operation").asText());
+            if (guard) guardSystem.set(body.get().path("system").asText());
+            respond(exchange, 200, guard ? "{\"message\":\"ALLOW\"}"
                     : "{\"message\":\"Relay reply\"}");
         });
         configureRelay("relay-secret");
         ChatRequest request = new ChatRequest();
         request.setMessage("Explain the scope");
-        request.setContext("STUDENT_PROJECT_INQUIRY");
+        request.setContext("COORDINATOR");
+        request.setAppContext("User role counts: STUDENT=9; User counts: PENDING=3");
 
         String result = service.chat(request);
 
@@ -158,9 +162,23 @@ class OpenAIServiceTest {
         assertEquals("chat", body.get().path("operation").asText());
         assertEquals("gpt-4o-mini", body.get().path("model").asText());
         assertEquals("Explain the scope", body.get().path("message").asText());
-        assertTrue(body.get().path("system").asText().contains("TalentBridge student project assistant"));
+        assertTrue(guardSystem.get().contains("ALLOW any question about TalentBridge data"));
+        assertTrue(guardSystem.get().contains("Authenticated role: COORDINATOR"));
+        assertTrue(body.get().path("system").asText().contains("authenticated COORDINATOR role"));
+        assertTrue(body.get().path("system").asText()
+                .contains("User role counts: STUDENT=9; User counts: PENDING=3"));
         assertTrue(body.get().path("history").isArray());
         assertEquals(256, body.get().path("maxTokens").asInt());
+    }
+
+    @Test
+    void studentPolicyDeniesAdministrativeData() {
+        String guard = ReflectionTestUtils.invokeMethod(service, "buildGuardSystem", "STUDENT");
+
+        assertTrue(guard.contains("DENY platform-wide user counts, approval queues"));
+        assertTrue(guard.contains("What is my evaluation?"));
+        assertTrue(guard.contains("where marks were lost"));
+        assertTrue(guard.contains("Authenticated role: STUDENT"));
     }
 
     @Test

@@ -1,5 +1,5 @@
 {
-  "name": "TalentBridge AI Relay",
+  "name": "TalentBridge AI Relay - Live App Context",
   "nodes": [
     {
       "parameters": {
@@ -21,7 +21,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body ?? $json;\nconst operation = body.operation;\nif (!['chat', 'chat_guard', 'evaluation'].includes(operation)) throw new Error('Unsupported operation');\nif (typeof body.system !== 'string' || !body.system.trim()) throw new Error('system is required');\nif (typeof body.message !== 'string' || !body.message.trim()) throw new Error('message is required');\nconst history = Array.isArray(body.history) ? body.history.slice(-10).flatMap(item => {\n  if (!item || !['user', 'assistant'].includes(item.role) || typeof item.content !== 'string' || !item.content.trim()) return [];\n  return [`${item.role}: ${item.content.trim().slice(0, 4000)}`];\n}) : [];\nconst message = body.message.trim().slice(0, 12000);\nconst prompt = [...history, `user: ${message}`].join('\\n');\nconst maxTokens = Math.min(Math.max(Math.trunc(Number(body.maxTokens)) || 512, 1), 2048);\nreturn [{ json: {\n  operation,\n  system: body.system.trim().slice(0, 8000),\n  prompt,\n  model: typeof body.model === 'string' && body.model.trim() ? body.model.trim() : 'gpt-4o-mini',\n  maxTokens,\n  temperature: operation === 'chat' ? 0.4 : 0\n} }];"
+        "jsCode": "const body = $json.body ?? $json;\nconst operation = body.operation;\nif (!['chat', 'chat_guard', 'evaluation'].includes(operation)) throw new Error('Unsupported operation');\nif (typeof body.system !== 'string' || !body.system.trim()) throw new Error('system is required');\nif (typeof body.message !== 'string' || !body.message.trim()) throw new Error('message is required');\nconst history = Array.isArray(body.history) ? body.history.slice(-10).flatMap(item => {\n  if (!item || !['user', 'assistant'].includes(item.role) || typeof item.content !== 'string' || !item.content.trim()) return [];\n  return [`${item.role}: ${item.content.trim().slice(0, 4000)}`];\n}) : [];\nconst message = body.message.trim().slice(0, 12000);\nconst prompt = [...history, `user: ${message}`].join('\\n');\nconst maxTokens = Math.min(Math.max(Math.trunc(Number(body.maxTokens)) || 512, 1), 2048);\nreturn [{ json: {\n  operation,\n  system: body.system.trim().slice(0, 60000),\n  prompt,\n  model: typeof body.model === 'string' && body.model.trim() ? body.model.trim() : 'gpt-4o-mini',\n  maxTokens,\n  temperature: operation === 'chat' ? 0.4 : 0\n} }];"
       },
       "id": "0e1a0f1c-f607-4d37-924b-2e013c0bc0f6",
       "name": "Prepare Input",
