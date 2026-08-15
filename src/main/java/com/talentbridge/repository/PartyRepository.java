@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 public interface PartyRepository extends JpaRepository<Party, UUID> {
+    long countByAssignedProjectIsNotNull();
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT DISTINCT p FROM Party p LEFT JOIN FETCH p.members WHERE p.id = :id")
     Optional<Party> findByIdForUpdate(@Param("id") UUID id);

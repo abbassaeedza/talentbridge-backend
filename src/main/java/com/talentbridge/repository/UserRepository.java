@@ -16,6 +16,12 @@ import java.util.Optional;
 import java.util.UUID;
 
 public interface UserRepository extends JpaRepository<User, UUID> {
+    @Query("SELECT u.role, COUNT(u) FROM User u GROUP BY u.role")
+    List<Object[]> countByRoleGrouped();
+
+    @Query("SELECT u.status, COUNT(u) FROM User u GROUP BY u.status")
+    List<Object[]> countByStatusGrouped();
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT u FROM User u WHERE u.id = :id")
     Optional<User> findByIdForUpdate(@Param("id") UUID id);

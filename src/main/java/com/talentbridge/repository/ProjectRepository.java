@@ -14,6 +14,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 public interface ProjectRepository extends JpaRepository<Project, UUID> {
+    @Query("SELECT p.status, COUNT(p) FROM Project p GROUP BY p.status")
+    List<Object[]> countByStatusGrouped();
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT p FROM Project p WHERE p.id = :id")
     Optional<Project> findByIdForUpdate(@Param("id") UUID id);
