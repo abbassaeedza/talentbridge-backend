@@ -81,6 +81,8 @@ class ChatContextServiceTest {
         assertTrue(context.contains("finishedWorkflow=1, unfinished=3, unassignedActive=2"));
         assertTrue(context.contains("User role counts: STUDENT=1"));
         assertTrue(context.contains("PENDING=1"));
+        assertTrue(context.contains("Coordinator user directory:"));
+        assertTrue(context.contains("user=Demo Student"));
     }
 
     @Test

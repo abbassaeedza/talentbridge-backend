@@ -78,6 +78,14 @@ public class ChatContextService {
         Arrays.stream(UserRole.values()).forEach(role ->
                 context.append(' ').append(role).append('=').append(roles.getOrDefault(role, 0L)));
         context.append('\n');
+        context.append("Coordinator user directory:\n");
+        allUsers.stream()
+                .sorted(Comparator.comparing(User::getFullName, String.CASE_INSENSITIVE_ORDER))
+                .limit(200)
+                .forEach(account -> context.append("- user=").append(account.getFullName())
+                        .append("; email=").append(account.getEmail())
+                        .append("; role=").append(account.getRole())
+                        .append("; status=").append(account.getStatus()).append('\n'));
         appendSubmissionCounts(context, submissionRepository.findAll());
     }
 
