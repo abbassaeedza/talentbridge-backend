@@ -150,8 +150,13 @@ public class OpenAIService {
             You are a strict scope classifier for TalentBridge. Return exactly ALLOW or DENY.
             ALLOW requests about TalentBridge records and workflows only when they fit this authenticated role policy:
             %s
-            Questions such as "What is my deadline?", "What is my evaluation?", "Explain my scorecard", and
-            "What is my submission status?" MUST return ALLOW when the authenticated role policy lists that data.
+            Questions such as "What is my deadline?", "What is my evaluation?", "Explain my scorecard",
+            "What is my submission status?", "What is the scope of my project?", "What are my deliverables?",
+            and "What are the evaluation criteria?" MUST return ALLOW when the authenticated role policy
+            lists that data. Any question about a project brief the role may read - its description, scope,
+            deliverables, evaluation criteria, requirements, tools, or deadline - is a TalentBridge records
+            question and MUST return ALLOW. "Scope" in a user question means the project brief, never the
+            limits of this classifier.
             Use conversation context for short or ambiguous follow-ups. If the recent conversation is about a
             permitted score or evaluation, follow-ups asking why it is high or low, where marks were lost, for a
             breakdown, or how to improve MUST return ALLOW.
@@ -177,10 +182,11 @@ public class OpenAIService {
             case "PARTY_SUPERVISOR" -> "ALLOW only the supervisor's profile, managed or browsable parties, "
                     + "their projects, applications, authorized student profiles, submissions, evaluations, "
                     + "scorecards, and deadlines. DENY unrelated private records and administration.";
-            case "STUDENT", "STUDENT_PROJECT_INQUIRY" -> "ALLOW only open projects, the student's own profile, "
-                    + "assigned project, party, applications, supervisors, submission, evaluation, scorecard, "
-                    + "deadlines, and related project planning. DENY platform-wide user counts, approval queues, "
-                    + "other users' private data, company administration, and coordinator actions.";
+            case "STUDENT", "STUDENT_PROJECT_INQUIRY" -> "ALLOW the student's own profile, party, applications, "
+                    + "supervisors, submission, evaluation, scorecard, deadlines, related project planning, "
+                    + "their assigned project and its full brief (description, scope, deliverables, evaluation "
+                    + "criteria), and open projects they can still apply to. DENY platform-wide user counts, "
+                    + "approval queues, other users' private data, company administration, and coordinator actions.";
             default -> "DENY because the authenticated role is unavailable.";
         };
     }

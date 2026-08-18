@@ -211,6 +211,8 @@ class OpenAIServiceTest {
 
         assertTrue(guard.contains("DENY platform-wide user counts, approval queues"));
         assertTrue(guard.contains("What is my evaluation?"));
+        assertTrue(guard.contains("What is the scope of my project?"));
+        assertTrue(guard.contains("their assigned project and its full brief"));
         assertTrue(guard.contains("where marks were lost"));
         assertTrue(guard.contains("Authenticated role: STUDENT"));
     }

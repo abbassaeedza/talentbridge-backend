@@ -14,6 +14,8 @@ import java.util.List;
     private String projectId;
     @Data public static class ChatMessageDto {
         @NotBlank @Pattern(regexp = "user|assistant") private String role;
-        @NotBlank @Size(max = 2000) private String content;
+        // Replayed assistant turns can reach the full chat token budget; OpenAIService
+        // trims every history entry to 2000 characters before the upstream call.
+        @NotBlank @Size(max = 12000) private String content;
     }
 }

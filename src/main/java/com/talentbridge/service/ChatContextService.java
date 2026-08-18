@@ -29,6 +29,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Service
@@ -113,13 +114,12 @@ public class ChatContextService {
     }
 
     private void appendStudentContext(StringBuilder context, User user) {
-        List<Project> visibleProjects = new ArrayList<>(
-                projectRepository.findByStatus(ProjectStatus.OPEN, Pageable.unpaged()).getContent());
-        partyRepository.findByMemberId(user.getId()).ifPresentOrElse(party -> {
-            Project assigned = party.getAssignedProject();
-            if (assigned != null && visibleProjects.stream().noneMatch(project -> project.getId().equals(assigned.getId()))) {
-                visibleProjects.add(assigned);
-            }
+        Optional<Party> membership = partyRepository.findByMemberId(user.getId());
+        Project assigned = membership.map(Party::getAssignedProject).orElse(null);
+        List<Project> visibleProjects = assigned != null
+                ? List.of(assigned)
+                : new ArrayList<>(projectRepository.findByStatus(ProjectStatus.OPEN, Pageable.unpaged()).getContent());
+        membership.ifPresentOrElse(party -> {
             context.append("My party: ").append(party.getName())
                     .append("; status=").append(party.getStatus())
                     .append("; members=").append(party.getMembers().size())
@@ -154,7 +154,25 @@ public class ChatContextService {
                     .append("; semester=").append(entry.getSemester())
                     .append("; academicYear=").append(entry.getAcademicYear()).append('\n'));
         }, () -> context.append("My scorecard: no evaluated projects yet\n"));
+        if (assigned != null) appendProjectBrief(context, assigned);
         appendProjects(context, visibleProjects);
+    }
+
+    private void appendProjectBrief(StringBuilder context, Project project) {
+        context.append("My assigned project brief: ").append(project.getTitle())
+                .append("; status=").append(project.getStatus())
+                .append("; deadline=").append(project.getDeadline()).append('\n');
+        appendBriefField(context, "description", project.getDescription());
+        appendBriefField(context, "scope", project.getScope());
+        appendBriefField(context, "deliverables", project.getDeliverables());
+        appendBriefField(context, "evaluationCriteria", project.getEvaluationCriteria());
+    }
+
+    private void appendBriefField(StringBuilder context, String label, String value) {
+        if (value == null || value.isBlank()) return;
+        String text = value.strip().replaceAll("\\s+", " ");
+        if (text.length() > 1500) text = text.substring(0, 1500) + "...";
+        context.append("- ").append(label).append(": ").append(text).append('\n');
     }
 
     private void appendStudentEvaluation(StringBuilder context, EvaluationReport report, User student) {

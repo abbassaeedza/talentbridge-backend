@@ -20,8 +20,6 @@ import com.talentbridge.repository.ProjectRepository;
 import com.talentbridge.repository.ScorecardRepository;
 import com.talentbridge.repository.SubmissionRepository;
 import com.talentbridge.repository.UserRepository;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -95,6 +93,9 @@ class ChatContextServiceTest {
                 .build();
         student.setId(UUID.randomUUID());
         Project project = project("Student project", ProjectStatus.CLOSED);
+        project.setScope("In scope: build the monitor. Out of scope: alerting.");
+        project.setDeliverables("Source code, README, tests, final demo.");
+        project.setEvaluationCriteria("Functionality, code quality, scope alignment.");
         StudentEvaluationScore individual = StudentEvaluationScore.builder()
                 .student(student)
                 .totalCommits(7)
@@ -137,8 +138,6 @@ class ChatContextServiceTest {
                 .entries(List.of(entry))
                 .build();
         when(settingsRepository.findById((short) 1)).thenReturn(Optional.empty());
-        when(projectRepository.findByStatus(ProjectStatus.OPEN, Pageable.unpaged()))
-                .thenReturn(Page.empty());
         when(partyRepository.findByMemberId(student.getId())).thenReturn(Optional.of(party));
         when(applicationRepository.findByPartyIdOrderByRankPositionAsc(party.getId()))
                 .thenReturn(List.of());
@@ -155,6 +154,10 @@ class ChatContextServiceTest {
         assertTrue(context.contains("AI authenticity=20%, code quality=25%, functionality=25%"));
         assertTrue(context.contains("Scope alignment: score=60.0/100; reason=One deliverable missing"));
         assertTrue(context.contains("My individual evaluation: score=76.0/100; commits=7; contribution=70.0%"));
+        assertTrue(context.contains("My assigned project brief: Student project"));
+        assertTrue(context.contains("- scope: In scope: build the monitor. Out of scope: alerting."));
+        assertTrue(context.contains("- deliverables: Source code, README, tests, final demo."));
+        assertTrue(context.contains("- evaluationCriteria: Functionality, code quality, scope alignment."));
     }
 
     private Project project(String title, ProjectStatus status) {
