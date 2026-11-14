@@ -1,5 +1,8 @@
 # Demo Authentication, Resend, and Runtime Configuration Design
 
+> Superseded by Stage 1 hardening on 2026-11-15: password-free demo login was removed, and the operator is no longer a disposable demo identity.
+> This is historical context; use [the current deployment guide](../../DEPLOYMENT.md#demo-fixtures-and-operator-safety) for password login, separate demo credentials, and guarded resets.
+
 ## Goal
 
 Keep the current coordinator account usable as a disposable public demo without exposing its password in the frontend bundle.

@@ -1,5 +1,8 @@
 # Demo Authentication, Resend, and Runtime Configuration Implementation Plan
 
+> Superseded by Stage 1 hardening on 2026-11-15: password-free demo login was removed, and the operator is no longer a disposable demo identity.
+> This is historical context, not an execution plan; use [the current deployment guide](../../DEPLOYMENT.md#demo-fixtures-and-operator-safety) for password login, separate demo credentials, and guarded resets.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 

@@ -25,7 +25,7 @@ public class DataSeeder implements ApplicationRunner {
     @Value("${app.seed.coordinator-email:coordinator@talentbridge.com}")
     private String coordinatorEmail;
 
-    @Value("${app.seed.coordinator-password:AdminTest123!!}")
+    @Value("${app.seed.coordinator-password:}")
     private String coordinatorPassword;
 
     @Value("${app.demo-mode:false}")
@@ -41,10 +41,9 @@ public class DataSeeder implements ApplicationRunner {
         User coordinator = userRepository.findByEmail(coordinatorEmail)
                 .orElseGet(this::createCoordinator);
 
-        if (demoMode && !passwordEncoder.matches(coordinatorPassword, coordinator.getPassword())) {
-            coordinator.setPassword(passwordEncoder.encode(coordinatorPassword));
-            userRepository.save(coordinator);
-            log.info("Demo coordinator password synchronized.");
+        if (coordinator.getRole() != UserRole.COORDINATOR) {
+            log.warn("Coordinator bootstrap email belongs to another role; skipping demo seed.");
+            return;
         }
 
         if (demoMode) {
@@ -53,6 +52,9 @@ public class DataSeeder implements ApplicationRunner {
     }
 
     private User createCoordinator() {
+        if (coordinatorPassword == null || coordinatorPassword.isBlank()) {
+            throw new IllegalStateException("APP_SEED_COORDINATOR_PASSWORD is required to bootstrap the operator account");
+        }
         User coordinator = User.builder()
                 .email(coordinatorEmail)
                 .password(passwordEncoder.encode(coordinatorPassword))

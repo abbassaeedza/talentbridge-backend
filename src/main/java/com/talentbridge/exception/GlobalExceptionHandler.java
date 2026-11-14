@@ -2,6 +2,7 @@ package com.talentbridge.exception;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.*;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.ErrorResponse;
@@ -19,6 +20,10 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BadRequestException.class)
     public ResponseEntity<ApiError> badRequest(BadRequestException e) {
         return ResponseEntity.status(400).body(new ApiError(400, e.getMessage()));
+    }
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiError> unreadableBody(HttpMessageNotReadableException e) {
+        return ResponseEntity.badRequest().body(new ApiError(400, "Request body is missing or invalid"));
     }
     @ExceptionHandler(ForbiddenException.class)
     public ResponseEntity<ApiError> forbidden(ForbiddenException e) {

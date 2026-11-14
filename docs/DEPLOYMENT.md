@@ -74,6 +74,8 @@ FRONTEND_URL
 APP_DEMO_MODE
 APP_SEED_COORDINATOR_EMAIL
 APP_SEED_COORDINATOR_PASSWORD
+APP_SEED_DEMO_PASSWORD
+APP_SEED_RESET_DEMO_DATA
 PARTY_MIN_SIZE
 PARTY_MAX_SIZE
 ```
@@ -112,16 +114,53 @@ The test sender can deliver only to the Resend account owner.
 Verify a sending domain before public launch.
 Use an address from that domain after verification.
 
-## Demo coordinator
+## Demo fixtures and operator safety
 
-Set `APP_DEMO_MODE=true` during product testing.
-Set the public demo email and password through the seed variables.
+`coordinator@talentbridge.com` remains the preserved operator/bootstrap identity, not a resettable demo account.
+`APP_SEED_COORDINATOR_PASSWORD` is used only to create a missing operator; it does not overwrite existing credentials.
+There is no fallback operator or demo password.
+Changing `APP_SEED_COORDINATOR_EMAIL` does not rename the existing operator: it can create a second account.
+If an operator rename is wanted later, review an explicit in-place migration to a fictional address such as `arden.hollis@example.test`, preserving its ID, role, and work.
 
-Each backend startup synchronizes the demo coordinator password while demo mode is active.
-The frontend demo-login request never receives or stores the password.
+`APP_DEMO_MODE=true` enables demo fixture maintenance, not anonymous authentication.
+The dedicated demo coordinator is `rowan.hale@example.test` and the other 22 demo users also have fictional alphabetic emails at `example.test`.
+Set `APP_SEED_DEMO_PASSWORD` through the server environment only and use normal password login.
+Keep demo and operator passwords different and share neither through frontend configuration, source code, or logs.
+`POST /api/auth/demo-login` has been removed.
 
-Set `APP_DEMO_MODE=false` before public launch.
-Change the coordinator password after demo mode is disabled.
+Version 6 does not replace an existing dataset merely because it is deployed.
+`APP_SEED_RESET_DEMO_DATA` defaults to `false`, including for a fresh database.
+A version mismatch logs a warning and skips replacement without preventing existing users from logging in.
+At version 6, startup synchronizes passwords for exact current fixture emails only, even when reset is disabled.
+It preserves user IDs, profiles, work, and statuses.
+Missing demo credentials skip maintenance rather than borrowing the operator password.
+
+Before the one-time replacement:
+
+1. Prepare and verify a restorable database backup, including relationships and all demo-owned custom work.
+2. Review the exact legacy/current email allowlists in `DemoDataSeeder` against a read-only preflight.
+3. Obtain approval to delete all work owned by those fixture accounts, including custom projects, applications, submissions, evaluations, and scorecards.
+4. Stop normal user writes during the reset window; a pessimistic lock on the singleton settings row serializes seeders across instances, but does not lock every normal application write.
+5. Only after those checks, supply the demo password and temporarily enable `APP_SEED_RESET_DEMO_DATA=true` with demo mode enabled.
+6. Verify the resulting dataset and restore `APP_SEED_RESET_DEMO_DATA=false` before normal operation.
+
+The flag records operator intent; the application cannot verify that a backup exists.
+The reset deletes only exact allowlisted accounts and their exclusively demo-owned work, never an entire email domain or a party based on its name.
+References to non-demo users or work block the entire reset before its first deletion and leave the seed version unchanged.
+Operator approvals/evaluation triggers on demo work are permitted; the operator identity, credentials, unrelated notifications, and preferences remain intact.
+Old exact fixture notifications addressed to the operator may be removed.
+Cleanup and reseeding run in one transaction; database failures roll back the transaction.
+The settings-row lock is acquired before reading the seed version, so a waiting instance sees the completed version and does not repeat a successful reset.
+If the singleton settings row is missing, maintenance is skipped rather than running an unlocked reset.
+Do not test this by starting the application against a production database.
+Use isolated tests and a restored disposable database for deployment rehearsal.
+The optional `DemoDataSeederDatabaseTest` accepts only an explicit loopback PostgreSQL URL in `STAGE_ONE_TEST_DB_URL`, with separate `STAGE_ONE_TEST_DB_USER` and `STAGE_ONE_TEST_DB_PASSWORD` environment values.
+Run `./mvnw -Dtest=DemoDataSeederDatabaseTest test` against a pre-Stage-1 public-schema restore, never a production tunnel.
+It exercises deletion and replacement with real foreign keys, then uses a temporary SQL trigger to reject the final version update through the Spring seeder proxy, without an outer test transaction.
+It verifies every restored public-schema row and the seed marker remain unchanged and removes its trigger and function in `finally`.
+Both database tests roll back their work; the normal offline test suite skips them unless the test URL is supplied.
+This change does not revoke previously issued JWTs; assess existing demo sessions before enabling the new demo coordinator in a shared deployment.
+Disable demo mode outside an intentionally isolated demo environment: the dedicated demo coordinator is still privileged, despite requiring a password.
 
 ## Initial deployment
 

@@ -16,6 +16,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
@@ -47,16 +48,15 @@ class DataSeederTest {
     }
 
     @Test
-    void synchronizesExistingCoordinatorPasswordInDemoMode() {
+    void preservesExistingOperatorPasswordAndIdentityInDemoMode() {
         ReflectionTestUtils.setField(seeder, "demoMode", true);
         when(userRepository.findByEmail(coordinator.getEmail())).thenReturn(Optional.of(coordinator));
-        when(passwordEncoder.matches("new-demo-password", "old-hash")).thenReturn(false);
-        when(passwordEncoder.encode("new-demo-password")).thenReturn("new-hash");
 
         seeder.seed();
 
-        assertEquals("new-hash", coordinator.getPassword());
-        verify(userRepository).save(coordinator);
+        assertEquals("old-hash", coordinator.getPassword());
+        assertEquals("coordinator@talentbridge.com", coordinator.getEmail());
+        verify(userRepository, never()).save(any());
     }
 
     @Test
@@ -75,10 +75,40 @@ class DataSeederTest {
     void seedsRepresentativeDataInDemoMode() {
         ReflectionTestUtils.setField(seeder, "demoMode", true);
         when(userRepository.findByEmail(coordinator.getEmail())).thenReturn(Optional.of(coordinator));
-        when(passwordEncoder.matches("new-demo-password", "old-hash")).thenReturn(true);
 
         seeder.seed();
 
         verify(demoDataSeeder).seed(coordinator);
+    }
+
+    @Test
+    void existingOperatorNeedsNoBootstrapPassword() {
+        ReflectionTestUtils.setField(seeder, "coordinatorPassword", "");
+        when(userRepository.findByEmail(coordinator.getEmail())).thenReturn(Optional.of(coordinator));
+
+        seeder.seed();
+
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void refusesToBootstrapWithMissingPassword() {
+        ReflectionTestUtils.setField(seeder, "coordinatorPassword", "");
+
+        assertThrows(IllegalStateException.class, seeder::seed);
+
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void bootstrapNeverReusesAnotherRole() {
+        ReflectionTestUtils.setField(seeder, "demoMode", true);
+        coordinator.setRole(UserRole.STUDENT);
+        when(userRepository.findByEmail(coordinator.getEmail())).thenReturn(Optional.of(coordinator));
+
+        seeder.seed();
+
+        verify(demoDataSeeder, never()).seed(any());
+        verify(userRepository, never()).save(any());
     }
 }

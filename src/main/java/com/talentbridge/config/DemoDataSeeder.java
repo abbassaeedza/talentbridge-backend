@@ -41,6 +41,9 @@ import com.talentbridge.repository.NotificationPreferenceRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -54,21 +57,20 @@ import java.util.stream.Stream;
 @Slf4j
 public class DemoDataSeeder {
 
-    static final String MARKER_EMAIL = "demo.company@talentbridge.com";
-    static final int DEMO_DATA_VERSION = 5;
-    private static final Set<String> DEMO_PARTY_NAMES = Set.of(
-            "Team Alpha Demo", "Team Beta Demo", "Team Gamma Demo", "Team Delta Demo", "Team Epsilon Demo",
-            "Team Orbit Demo", "Team Northstar Demo", "Team Catalyst Demo", "Team Launchpad Demo", "Team Summit Demo");
+    static final String MARKER_EMAIL = "avery.quinn@example.test";
+    static final String DEMO_COORDINATOR_EMAIL = "rowan.hale@example.test";
+    static final int DEMO_DATA_VERSION = 6;
     private static final java.util.Map<String, Set<String>> DEMO_NOTIFICATIONS = java.util.Map.of(
             "Demo data ready", Set.of("Representative demo records are available."),
             "New demo workspace ready", Set.of("The version 3 demo dataset is available.",
-                    "The version 4 demo dataset is available.", "The version 5 demo dataset is available."),
+                    "The version 4 demo dataset is available.", "The version 5 demo dataset is available.",
+                    "The version 6 demo dataset is available."),
             "Project awaiting review", Set.of("Hiring Analytics Dashboard needs review.",
                     "Graduate Hiring Insights needs review."),
             "Deadline scheduled", Set.of("AI Support Copilot has an active deadline.",
                     "Campus Helpdesk Copilot has an active deadline."));
-    private static final List<String> DEMO_USER_EMAILS = List.of(
-            MARKER_EMAIL, "demo.company.second@talentbridge.com", "pending.company@talentbridge.com",
+    static final List<String> LEGACY_USER_EMAILS = List.of(
+            "demo.company@talentbridge.com", "demo.company.second@talentbridge.com", "pending.company@talentbridge.com",
             "rejected.company@talentbridge.com", "suspended.company@talentbridge.com",
             "demo.party-supervisor@talentbridge.com", "pending.party-supervisor@talentbridge.com",
             "demo.project-supervisor@talentbridge.com", "demo.project-supervisor.second@talentbridge.com",
@@ -77,6 +79,23 @@ public class DemoDataSeeder {
             "gibran.student@talentbridge.com", "hana.student@talentbridge.com", "imran.student@talentbridge.com",
             "javed.student@talentbridge.com", "pending.student@talentbridge.com",
             "rejected.student@talentbridge.com", "suspended.student@talentbridge.com");
+    static final List<String> DEMO_USER_EMAILS = List.of(
+            DEMO_COORDINATOR_EMAIL, MARKER_EMAIL, "ellis.wren@example.test", "hazel.reed@example.test",
+            "cedar.lane@example.test", "sylvie.moss@example.test", "leona.briar@example.test",
+            "tessa.grove@example.test", "orion.finch@example.test", "lyra.brook@example.test",
+            "mira.shah@example.test", "felix.arden@example.test", "nora.ellis@example.test",
+            "theo.marlow@example.test", "iris.vale@example.test", "jasper.willow@example.test",
+            "elara.stone@example.test", "soren.ash@example.test", "freya.bell@example.test",
+            "milo.hart@example.test", "ada.blair@example.test", "evan.rose@example.test",
+            "lena.frost@example.test");
+
+    @Value("${app.seed.demo-password:}")
+    private String demoPassword;
+
+    @Value("${app.seed.reset-demo-data:false}")
+    private boolean resetDemoData;
+
+    private final PasswordEncoder passwordEncoder;
 
     private final UserRepository userRepository;
     private final StudentProfileRepository studentProfileRepository;
@@ -94,48 +113,78 @@ public class DemoDataSeeder {
     private final NotificationPreferenceRepository notificationPreferenceRepository;
     private final UserModerationEventRepository moderationEventRepository;
 
-    public void seed(User coordinator) {
-        ApplicationSettings settings = applicationSettingsRepository.findById(ApplicationSettings.ID)
-                .orElseGet(ApplicationSettings::new);
-        if (Integer.valueOf(DEMO_DATA_VERSION).equals(settings.getDemoDataVersion())) return;
-        clearDemoFixtures();
+    @Transactional
+    public void seed(User operator) {
+        ApplicationSettings settings = applicationSettingsRepository.findByIdForUpdate(ApplicationSettings.ID)
+                .orElse(null);
+        if (settings == null) {
+            log.warn("Demo seed skipped: singleton application settings row is missing; restore schema before retrying.");
+            return;
+        }
+        if (LEGACY_USER_EMAILS.contains(operator.getEmail()) || DEMO_USER_EMAILS.contains(operator.getEmail())) {
+            log.warn("Demo seed skipped: operator identity overlaps the demo fixture allowlist.");
+            return;
+        }
+        if (demoPassword == null || demoPassword.isBlank()) {
+            log.warn("Demo seed skipped: APP_SEED_DEMO_PASSWORD is not configured.");
+            return;
+        }
+        if (Integer.valueOf(DEMO_DATA_VERSION).equals(settings.getDemoDataVersion())) {
+            DEMO_USER_EMAILS.stream().map(userRepository::findByEmail).flatMap(java.util.Optional::stream)
+                    .filter(user -> !passwordEncoder.matches(demoPassword, user.getPassword()))
+                    .forEach(user -> {
+                        user.setPassword(passwordEncoder.encode(demoPassword));
+                        userRepository.save(user);
+                    });
+            return;
+        }
+        if (!resetDemoData || settings.getDemoDataVersion() != null
+                && settings.getDemoDataVersion() > DEMO_DATA_VERSION) {
+            log.warn("Demo data version mismatch (stored {}, expected {}): replacement skipped. "
+                    + "Backup and reset approval are required before APP_SEED_RESET_DEMO_DATA=true.",
+                    settings.getDemoDataVersion(), DEMO_DATA_VERSION);
+            return;
+        }
+        if (!clearDemoFixtures(operator)) return;
 
-        String password = coordinator.getPassword();
-        User company = user(MARKER_EMAIL, "Vertex", "Labs",
+        String password = passwordEncoder.encode(demoPassword);
+        User coordinator = user(DEMO_COORDINATOR_EMAIL, "Rowan", "Hale",
+                UserRole.COORDINATOR, UserStatus.APPROVED, password);
+        User company = user(MARKER_EMAIL, "Avery", "Quinn",
                 UserRole.COMPANY, UserStatus.APPROVED, password);
-        User secondCompany = user("demo.company.second@talentbridge.com", "Harbor", "Analytics",
+        User secondCompany = user("ellis.wren@example.test", "Ellis", "Wren",
                 UserRole.COMPANY, UserStatus.APPROVED, password);
-        User pendingCompany = user("pending.company@talentbridge.com", "Pending", "Company",
+        User pendingCompany = user("hazel.reed@example.test", "Hazel", "Reed",
                 UserRole.COMPANY, UserStatus.PENDING, password);
-        User rejectedCompany = user("rejected.company@talentbridge.com", "Rejected", "Company",
+        User rejectedCompany = user("cedar.lane@example.test", "Cedar", "Lane",
                 UserRole.COMPANY, UserStatus.REJECTED, password);
-        User suspendedCompany = user("suspended.company@talentbridge.com", "Suspended", "Company",
+        User suspendedCompany = user("sylvie.moss@example.test", "Sylvie", "Moss",
                 UserRole.COMPANY, UserStatus.SUSPENDED, password);
-        User partySupervisor = user("demo.party-supervisor@talentbridge.com", "Sara", "Ahmed",
+        User partySupervisor = user("leona.briar@example.test", "Leona", "Briar",
                 UserRole.PARTY_SUPERVISOR, UserStatus.APPROVED, password);
-        User projectSupervisor = user("demo.project-supervisor@talentbridge.com", "Omar", "Khan",
+        User projectSupervisor = user("orion.finch@example.test", "Orion", "Finch",
                 UserRole.PROJECT_SUPERVISOR, UserStatus.APPROVED, password);
-        User secondProjectSupervisor = user("demo.project-supervisor.second@talentbridge.com", "Maya", "Farooq",
+        User secondProjectSupervisor = user("lyra.brook@example.test", "Lyra", "Brook",
                 UserRole.PROJECT_SUPERVISOR, UserStatus.APPROVED, password);
-        User pendingPartySupervisor = user("pending.party-supervisor@talentbridge.com", "Nadia", "Riaz",
+        User pendingPartySupervisor = user("tessa.grove@example.test", "Tessa", "Grove",
                 UserRole.PARTY_SUPERVISOR, UserStatus.PENDING, password);
         List<User> students = List.of(
-                user("alice.student@talentbridge.com", "Alice", "Ali", UserRole.STUDENT, UserStatus.APPROVED, password),
-                user("bob.student@talentbridge.com", "Bob", "Raza", UserRole.STUDENT, UserStatus.APPROVED, password),
-                user("carol.student@talentbridge.com", "Carol", "Iqbal", UserRole.STUDENT, UserStatus.APPROVED, password),
-                user("dan.student@talentbridge.com", "Dan", "Malik", UserRole.STUDENT, UserStatus.APPROVED, password),
-                user("erin.student@talentbridge.com", "Erin", "Shah", UserRole.STUDENT, UserStatus.APPROVED, password),
-                user("farah.student@talentbridge.com", "Farah", "Noor", UserRole.STUDENT, UserStatus.APPROVED, password),
-                user("gibran.student@talentbridge.com", "Gibran", "Saeed", UserRole.STUDENT, UserStatus.APPROVED, password),
-                user("hana.student@talentbridge.com", "Hana", "Yusuf", UserRole.STUDENT, UserStatus.APPROVED, password),
-                user("imran.student@talentbridge.com", "Imran", "Qureshi", UserRole.STUDENT, UserStatus.APPROVED, password),
-                user("javed.student@talentbridge.com", "Javed", "Iqbal", UserRole.STUDENT, UserStatus.APPROVED, password),
-                user("pending.student@talentbridge.com", "Pending", "Student", UserRole.STUDENT, UserStatus.PENDING, password),
-                user("rejected.student@talentbridge.com", "Rejected", "Student", UserRole.STUDENT, UserStatus.REJECTED, password),
-                user("suspended.student@talentbridge.com", "Suspended", "Student", UserRole.STUDENT, UserStatus.SUSPENDED, password));
+                user("mira.shah@example.test", "Mira", "Shah", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("felix.arden@example.test", "Felix", "Arden", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("nora.ellis@example.test", "Nora", "Ellis", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("theo.marlow@example.test", "Theo", "Marlow", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("iris.vale@example.test", "Iris", "Vale", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("jasper.willow@example.test", "Jasper", "Willow", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("elara.stone@example.test", "Elara", "Stone", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("soren.ash@example.test", "Soren", "Ash", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("freya.bell@example.test", "Freya", "Bell", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("milo.hart@example.test", "Milo", "Hart", UserRole.STUDENT, UserStatus.APPROVED, password),
+                user("ada.blair@example.test", "Ada", "Blair", UserRole.STUDENT, UserStatus.PENDING, password),
+                user("evan.rose@example.test", "Evan", "Rose", UserRole.STUDENT, UserStatus.REJECTED, password),
+                user("lena.frost@example.test", "Lena", "Frost", UserRole.STUDENT, UserStatus.SUSPENDED, password));
 
         userRepository.saveAll(Stream.concat(
-                Stream.of(company, secondCompany, pendingCompany, rejectedCompany, suspendedCompany,
+                Stream.of(coordinator, company, secondCompany, pendingCompany, rejectedCompany, suspendedCompany,
                         partySupervisor, projectSupervisor, secondProjectSupervisor, pendingPartySupervisor),
                 students.stream()).toList());
 
@@ -204,10 +253,10 @@ public class DemoDataSeeder {
                                                                  User acceptedSupervisor) {
         LocalDateTime now = LocalDateTime.now();
         return List.of(
-                invitation(primary, "pending.project-supervisor@talentbridge.com", "1", ProjectSupervisorInvitationStatus.PENDING, now.plusDays(7), null),
-                invitation(primary, "expired.project-supervisor@talentbridge.com", "2", ProjectSupervisorInvitationStatus.EXPIRED, now.minusDays(1), null),
+                invitation(primary, "piper.dale@example.test", "1", ProjectSupervisorInvitationStatus.PENDING, now.plusDays(7), null),
+                invitation(primary, "silas.fern@example.test", "2", ProjectSupervisorInvitationStatus.EXPIRED, now.minusDays(1), null),
                 invitation(primary, acceptedSupervisor.getEmail(), "3", ProjectSupervisorInvitationStatus.ACCEPTED, now.plusDays(7), now.minusDays(2)),
-                invitation(secondary, "revoked.project-supervisor@talentbridge.com", "4", ProjectSupervisorInvitationStatus.REVOKED, now.plusDays(7), null));
+                invitation(secondary, "clara.lark@example.test", "4", ProjectSupervisorInvitationStatus.REVOKED, now.plusDays(7), null));
     }
 
     private ProjectSupervisorInvitation invitation(CompanyProfile company, String email, String hashDigit,
@@ -321,14 +370,12 @@ public class DemoDataSeeder {
                 .build();
     }
 
-    private void clearDemoFixtures() {
-        List<User> demoUsers = Stream.concat(
-                DEMO_USER_EMAILS.stream().map(userRepository::findByEmail).flatMap(java.util.Optional::stream),
-                userRepository.findAll().stream().filter(user -> user.getEmail().endsWith("@talentbridge.test")))
-                .distinct().toList();
-        if (demoUsers.isEmpty()) return;
+    private boolean clearDemoFixtures(User operator) {
+        List<User> demoUsers = Stream.concat(LEGACY_USER_EMAILS.stream(), DEMO_USER_EMAILS.stream())
+                .map(userRepository::findByEmail).flatMap(java.util.Optional::stream).toList();
         Set<java.util.UUID> userIds = demoUsers.stream().map(User::getId)
                 .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        if (userIds.contains(operator.getId())) return blockedReset("operator identity");
         List<CompanyProfile> companies = companyProfileRepository.findAll().stream()
                 .filter(profile -> userIds.contains(profile.getUser().getId())).toList();
         Set<java.util.UUID> companyIds = companies.stream().map(CompanyProfile::getId)
@@ -339,56 +386,126 @@ public class DemoDataSeeder {
                         || project.getProjectSupervisor() != null && userIds.contains(project.getProjectSupervisor().getId())
                         || project.getCompany() != null && companyIds.contains(project.getCompany().getId()))
                 .toList();
+        if (projects.stream().anyMatch(project -> !userIds.contains(project.getCreatedBy().getId())
+                || project.getCompany() != null && !companyIds.contains(project.getCompany().getId())
+                || project.getProjectSupervisor() != null && !userIds.contains(project.getProjectSupervisor().getId())
+                || project.getApprovedBy() != null && !userIds.contains(project.getApprovedBy().getId())
+                    && !operator.getId().equals(project.getApprovedBy().getId()))) {
+            return blockedReset("projects shared with non-demo users");
+        }
         List<Party> parties = partyRepository.findAll().stream()
-                .filter(party -> DEMO_PARTY_NAMES.contains(party.getName())
-                        || party.getLeader() != null && userIds.contains(party.getLeader().getId())
+                .filter(party -> party.getLeader() != null && userIds.contains(party.getLeader().getId())
                         || party.getSupervisor() != null && userIds.contains(party.getSupervisor().getId())
                         || party.getMembers().stream().anyMatch(member -> userIds.contains(member.getId()))
                         || party.getAssignedProject() != null && projects.contains(party.getAssignedProject()))
                 .toList();
+        if (parties.stream().anyMatch(party -> party.getLeader() == null
+                || !userIds.contains(party.getLeader().getId())
+                || party.getMembers().stream().anyMatch(member -> !userIds.contains(member.getId()))
+                || party.getSupervisor() != null && !userIds.contains(party.getSupervisor().getId())
+                || party.getAssignedProject() != null && !projects.contains(party.getAssignedProject()))) {
+            return blockedReset("parties shared with non-demo users or projects");
+        }
+        List<Application> applications = applicationRepository.findAll().stream()
+                .filter(application -> parties.contains(application.getParty())
+                        || projects.contains(application.getProject())).toList();
+        if (applications.stream().anyMatch(application -> !parties.contains(application.getParty())
+                || !projects.contains(application.getProject()))) {
+            return blockedReset("applications linking demo and non-demo work");
+        }
         List<Submission> submissions = submissionRepository.findAll().stream()
                 .filter(submission -> parties.contains(submission.getParty()) || projects.contains(submission.getProject()))
                 .toList();
+        if (submissions.stream().anyMatch(submission -> !parties.contains(submission.getParty())
+                || !projects.contains(submission.getProject()))) {
+            return blockedReset("submissions linking demo and non-demo work");
+        }
         List<EvaluationReport> evaluations = evaluationReportRepository.findAll().stream()
                 .filter(evaluation -> submissions.contains(evaluation.getSubmission())
-                        || evaluation.getTriggeredBy() != null && userIds.contains(evaluation.getTriggeredBy().getId()))
+                        || evaluation.getTriggeredBy() != null && userIds.contains(evaluation.getTriggeredBy().getId())
+                        || evaluation.getStudentScores().stream()
+                            .anyMatch(score -> userIds.contains(score.getStudent().getId())))
                 .toList();
-        scorecardRepository.findAll().stream()
+        if (evaluations.stream().anyMatch(evaluation -> !submissions.contains(evaluation.getSubmission())
+                || evaluation.getStudentScores().stream().anyMatch(score -> !userIds.contains(score.getStudent().getId()))
+                || evaluation.getTriggeredBy() != null && !userIds.contains(evaluation.getTriggeredBy().getId())
+                    && !operator.getId().equals(evaluation.getTriggeredBy().getId()))) {
+            return blockedReset("evaluations linked to non-demo work or students");
+        }
+        List<Scorecard> scorecards = scorecardRepository.findAll().stream()
                 .filter(scorecard -> userIds.contains(scorecard.getStudent().getId())
                         || scorecard.getEntries().stream().anyMatch(entry -> projects.contains(entry.getProject())
                         || evaluations.contains(entry.getEvaluationReport())))
-                .forEach(scorecardRepository::delete);
+                .toList();
+        if (scorecards.stream().anyMatch(scorecard -> !userIds.contains(scorecard.getStudent().getId())
+                || scorecard.getEntries().stream().anyMatch(entry -> !projects.contains(entry.getProject())
+                    || entry.getEvaluationReport() != null && !evaluations.contains(entry.getEvaluationReport())))) {
+            return blockedReset("scorecards linking demo and non-demo work");
+        }
+        List<SupervisorProfile> supervisors = supervisorProfileRepository.findAll().stream()
+                .filter(profile -> userIds.contains(profile.getUser().getId())
+                        || profile.getCompany() != null && companyIds.contains(profile.getCompany().getId())).toList();
+        if (supervisors.stream().anyMatch(profile -> !userIds.contains(profile.getUser().getId())
+                || profile.getCompany() != null && !companyIds.contains(profile.getCompany().getId()))) {
+            return blockedReset("supervisor profiles shared with non-demo accounts");
+        }
+        var moderationEvents = moderationEventRepository.findAll().stream()
+                .filter(event -> userIds.contains(event.getCoordinatorId())).toList();
+        if (moderationEvents.stream().anyMatch(event -> !LEGACY_USER_EMAILS.contains(event.getNormalizedEmail())
+                && !DEMO_USER_EMAILS.contains(event.getNormalizedEmail()))) {
+            return blockedReset("moderation history for non-demo accounts");
+        }
+
+        // Validate the entire deletion graph before the first write; ownership never expands the user allowlist.
+        // Break inverse cascades so deleting parents cannot resurrect children already removed and flushed.
+        submissions.forEach(submission -> submission.setEvaluationReport(null));
+        parties.forEach(party -> {
+            party.setSubmission(null);
+            party.getApplications().clear();
+        });
+        projects.forEach(project -> project.getApplications().clear());
+        demoUsers.forEach(user -> {
+            user.setStudentProfile(null);
+            user.setCompanyProfile(null);
+            user.setSupervisorProfile(null);
+        });
+        scorecards.forEach(scorecardRepository::delete);
         scorecardRepository.flush();
         evaluations.forEach(evaluationReportRepository::delete);
+        evaluationReportRepository.flush();
         notificationRepository.findAll().stream().filter(n -> userIds.contains(n.getRecipient().getId())
-                        || DEMO_NOTIFICATIONS.getOrDefault(n.getTitle(), Set.of()).contains(n.getMessage()))
+                        || operator.getId().equals(n.getRecipient().getId())
+                        && n.getMessage() != null
+                        && DEMO_NOTIFICATIONS.getOrDefault(n.getTitle(), Set.of()).contains(n.getMessage()))
                 .forEach(notificationRepository::delete);
         userIds.forEach(notificationPreferenceRepository::deleteByUserId);
-        moderationEventRepository.findAll().stream()
-                .filter(event -> userIds.contains(event.getCoordinatorId())
-                        || event.getNormalizedEmail().endsWith("@talentbridge.test"))
-                .forEach(moderationEventRepository::delete);
-        applicationRepository.findAll().stream()
-                .filter(application -> parties.contains(application.getParty())
-                        || projects.contains(application.getProject()))
-                .forEach(applicationRepository::delete);
+        moderationEvents.forEach(moderationEventRepository::delete);
+        applications.forEach(applicationRepository::delete);
+        applicationRepository.flush();
         submissions.forEach(submissionRepository::delete);
+        submissionRepository.flush();
         parties.forEach(partyRepository::delete);
-        supervisorProfileRepository.findAll().stream()
-                .filter(profile -> userIds.contains(profile.getUser().getId())
-                        || profile.getCompany() != null && companyIds.contains(profile.getCompany().getId()))
-                .forEach(supervisorProfileRepository::delete);
+        partyRepository.flush();
+        supervisors.forEach(supervisorProfileRepository::delete);
         studentProfileRepository.findAll().stream()
                 .filter(profile -> userIds.contains(profile.getUser().getId()))
                 .forEach(studentProfileRepository::delete);
         invitationRepository.findAll().stream()
-                .filter(invitation -> companyIds.contains(invitation.getCompany().getId())
-                        || invitation.getEmail().endsWith("@talentbridge.test"))
+                .filter(invitation -> companyIds.contains(invitation.getCompany().getId()))
                 .forEach(invitationRepository::delete);
+        invitationRepository.flush();
         projects.forEach(projectRepository::delete);
+        projectRepository.flush();
         companies.forEach(companyProfileRepository::delete);
+        companyProfileRepository.flush();
         userRepository.deleteAll(demoUsers);
         userRepository.flush();
+        return true;
+    }
+
+    private boolean blockedReset(String reason) {
+        log.warn("Demo reset blocked: {}. No demo records changed; review shared work before retrying.", reason);
+        return false;
     }
 
     private List<Application> buildApplications(List<Party> parties, List<Project> projects) {
@@ -443,7 +560,7 @@ public class DemoDataSeeder {
     private List<Notification> buildNotifications(User coordinator) {
         return List.of(
                 notification(coordinator, NotificationType.GENERAL,
-                        "New demo workspace ready", "The version 5 demo dataset is available.", true),
+                        "New demo workspace ready", "The version 6 demo dataset is available.", true),
                 notification(coordinator, NotificationType.NEW_PROJECT_POSTED,
                         "Project awaiting review", "Graduate Hiring Insights needs review.", false),
                 notification(coordinator, NotificationType.DEADLINE_REMINDER,

@@ -2,10 +2,10 @@ package com.talentbridge.service;
 
 import com.talentbridge.dto.response.AuthResponse;
 import com.talentbridge.dto.request.RegisterRequest;
+import com.talentbridge.dto.request.LoginRequest;
 import com.talentbridge.entity.User;
 import com.talentbridge.enums.UserRole;
 import com.talentbridge.enums.UserStatus;
-import com.talentbridge.exception.ResourceNotFoundException;
 import com.talentbridge.exception.BadRequestException;
 import com.talentbridge.repository.CompanyProfileRepository;
 import com.talentbridge.repository.ScorecardRepository;
@@ -18,7 +18,6 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -31,7 +30,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
-class AuthServiceDemoLoginTest {
+class AuthServiceTest {
 
     @Mock private UserRepository userRepository;
     @Mock private CompanyProfileRepository companyProfileRepository;
@@ -57,16 +56,16 @@ class AuthServiceDemoLoginTest {
     }
 
     @Test
-    void logsInConfiguredCoordinatorWhenDemoModeIsEnabled() {
-        ReflectionTestUtils.setField(service, "demoMode", true);
-        ReflectionTestUtils.setField(service, "coordinatorEmail", coordinator.getEmail());
-        ReflectionTestUtils.setField(service, "coordinatorPassword", "demo-password");
+    void coordinatorLoginRequiresSubmittedPassword() {
         when(userRepository.findByEmail(coordinator.getEmail())).thenReturn(Optional.of(coordinator));
         when(passwordEncoder.matches("demo-password", coordinator.getPassword())).thenReturn(true);
         when(tokenProvider.generateAccessToken(any(), any(), any())).thenReturn("access");
         when(tokenProvider.generateRefreshToken(any())).thenReturn("refresh");
 
-        AuthResponse result = service.demoLogin();
+        LoginRequest request = new LoginRequest();
+        request.setEmail(coordinator.getEmail());
+        request.setPassword("demo-password");
+        AuthResponse result = service.login(request);
 
         assertEquals("access", result.getAccessToken());
         assertEquals("refresh", result.getRefreshToken());
@@ -74,11 +73,14 @@ class AuthServiceDemoLoginTest {
     }
 
     @Test
-    void hidesDemoLoginWhenDemoModeIsDisabled() {
-        ReflectionTestUtils.setField(service, "demoMode", false);
+    void rejectsIncorrectCoordinatorPasswordWithoutIssuingTokens() {
+        when(userRepository.findByEmail(coordinator.getEmail())).thenReturn(Optional.of(coordinator));
+        LoginRequest request = new LoginRequest();
+        request.setEmail(coordinator.getEmail());
+        request.setPassword("incorrect-test-password");
 
-        assertThrows(ResourceNotFoundException.class, service::demoLogin);
-        verifyNoInteractions(userRepository);
+        assertThrows(BadRequestException.class, () -> service.login(request));
+        verifyNoInteractions(tokenProvider);
     }
 
     @Test

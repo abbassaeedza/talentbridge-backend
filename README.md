@@ -75,9 +75,11 @@ Flyway applies database migrations during startup.
 | `SUPABASE_STORAGE_BUCKET` | Public Storage bucket, defaults to `talentbridge-files` |
 | `RESEND_API_KEY` | Server-only Resend API key |
 | `RESEND_FROM_EMAIL` | Sender identity, such as `TalentBridge <notifications@example.com>` |
-| `APP_DEMO_MODE` | Enables backend-only public demo login and coordinator password synchronization |
-| `APP_SEED_COORDINATOR_EMAIL` | Coordinator account used by the data seeder and demo login |
-| `APP_SEED_COORDINATOR_PASSWORD` | Coordinator password used by the data seeder and demo login |
+| `APP_DEMO_MODE` | Enables demo fixture seeding and password synchronization, never password-free login |
+| `APP_SEED_COORDINATOR_EMAIL` | Preserved operator/bootstrap identity, defaults to `coordinator@talentbridge.com` |
+| `APP_SEED_COORDINATOR_PASSWORD` | Required only when creating the operator; existing operator credentials are preserved |
+| `APP_SEED_DEMO_PASSWORD` | Required server-only password for the 23 exact fictional demo accounts |
+| `APP_SEED_RESET_DEMO_DATA` | Defaults to `false`; explicit one-time opt-in to replace an older dataset after backup and approval |
 | `PARTY_MIN_SIZE` | Minimum party size, defaults to `2` |
 | `PARTY_MAX_SIZE` | Maximum party size, defaults to `3` |
 | `PARTY_SUPERVISOR_MAX_PARTIES` | Maximum supervised parties per academic term, defaults to `2` |
@@ -85,8 +87,12 @@ Flyway applies database migrations during startup.
 
 Development defaults exist for convenience.
 Always override passwords, tokens, and seed credentials in a public deployment.
-Keep `APP_DEMO_MODE=true` only while the coordinator account is intentionally disposable and public.
-Set it to `false` before launch.
+Demo accounts use normal email/password login, including `rowan.hale@example.test` (coordinator) and `mira.shah@example.test` (student).
+All replacement fixture emails use alphabetic names at `example.test`.
+The operator is not a demo fixture and is never deleted or password-synchronized by a demo reset.
+An existing version mismatch is skipped with a warning unless reset is explicitly enabled.
+At the current version, startup synchronizes only the exact demo accounts' passwords without resetting their work.
+See the deployment guide before enabling reset; ownership-based replacement deletes extra work created by allowlisted demo users too.
 
 ## Commands
 
@@ -105,7 +111,7 @@ See [Cloud Run and Supabase deployment](docs/DEPLOYMENT.md) for setup, secrets, 
 
 | Prefix | Purpose |
 | --- | --- |
-| `/api/auth` | Registration, login, demo login, refresh, and password management |
+| `/api/auth` | Registration, password login, refresh, and password management |
 | `/api/users` | Profiles, approvals, GitHub linking, and notifications |
 | `/api/projects` | Project creation, discovery, approval, and assignment |
 | `/api/parties` | Team membership, applications, and supervision |
