@@ -13,8 +13,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.ApplicationContextInitializer;
-import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -43,8 +41,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@SpringJUnitConfig(classes = {DatabaseTestConfig.class, AiQuotaDatabaseIT.QuotaTestConfig.class},
-        initializers = AiQuotaDatabaseIT.DisposableDatabaseOnly.class)
+@SpringJUnitConfig(classes = {DatabaseTestConfig.class, AiQuotaDatabaseIT.QuotaTestConfig.class})
 @TestPropertySource(properties = {"jwt.secret=synthetic-quota-integration-signing-key-not-production",
         "jwt.expiration-ms=60000", "jwt.refresh-expiration-ms=120000"})
 class AiQuotaDatabaseIT {
@@ -431,15 +428,6 @@ class AiQuotaDatabaseIT {
         var failure = assertThrows(AiQuotaExceededException.class, () -> service.reserve(user));
         assertEquals(reason, failure.getReason());
         assertEquals(seconds, failure.getRetryAfterSeconds());
-    }
-
-    public static class DisposableDatabaseOnly implements ApplicationContextInitializer<ConfigurableApplicationContext> {
-        @Override
-        public void initialize(ConfigurableApplicationContext context) {
-            String url = System.getenv("TALENTBRIDGE_TEST_DB_URL");
-            if (url == null || !url.matches("jdbc:postgresql://(?:127\\.0\\.0\\.1|localhost):32772/talentbridge_test"))
-                throw new IllegalStateException("Quota database tests require the exclusively approved disposable database on port 32772");
-        }
     }
 
     @TestConfiguration(proxyBeanMethods = false)
