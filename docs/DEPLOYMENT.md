@@ -249,16 +249,53 @@ Test the tagged candidate, then route explicitly to that verified revision.
 
 ## Automatic deployment
 
-The workflow at `.github/workflows/deploy-cloud-run.yml` runs after each push to `main`.
-GitHub uses Workload Identity Federation to authenticate without a private key file.
-The identity provider accepts only `abbassaeedza/talentbridge-backend`.
+The workflow at `.github/workflows/deploy-cloud-run.yml` checks pull requests targeting `main`, pushes to `main`, and manual runs.
+The stable required-check names are `Backend unit tests` and `Backend PostgreSQL tests`.
+The first runs the offline Maven unit suite and dependency-free release-helper tests on Node 24.
+The second runs `bash ./mvnw -B -Pdatabase-tests verify` against a fresh PostgreSQL 16 service with synthetic credentials and the loopback-only `talentbridge_test` database.
+This profile also reruns units; neither check receives production credentials, backups, or OIDC permissions.
+
+Register these checks before requiring both on an up-to-date pull request to `main`.
+Branch protection must apply to administrators, forbid force pushes and deletion, and require no additional human approvals.
+The main operator owns branch protection, WIF configuration, failing-PR proof, and rollouts; editing this workflow does not configure those external controls.
+
+`Deploy production` depends on both checks and runs only for a `main` push or a manual run on `main`.
+Its fixed production concurrency group never cancels an active deployment.
+Its first step compares the current remote `main` SHA with `GITHUB_SHA` before checkout or Google authentication.
+A superseded queued source skips all deployment steps without failing the checks.
+The remaining steps check out exactly `GITHUB_SHA` and grant `id-token: write` only to this deployment job.
+
+GitHub uses Workload Identity Federation with `google-github-actions/auth@v3` and `setup-gcloud@v3`, without a private key file.
+The provider's verified trust condition requires both `assertion.repository == 'abbassaeedza/talentbridge-backend'` and `assertion.ref == 'refs/heads/main'`.
+Repository-only trust is insufficient: a feature-branch workflow could otherwise request production credentials.
 The deployer can write only to the TalentBridge Artifact Registry repository, deploy only this Cloud Run service, and act only as the dedicated runtime service account.
 Public access is configured once on the Cloud Run service and is not changed by each deployment.
 
-The workflow builds the Docker image on GitHub.
-It pushes the image to Artifact Registry.
-It deploys a new Cloud Run revision with the same resource limits.
-Existing Cloud Run non-secret variables and pinned secret references remain unchanged.
+`scripts/release.mjs` builds and pushes the exact checked-out source under its full Git SHA for `linux/amd64`.
+It compares the build's digest with the registry's SHA-tag resolution, resolves an OCI index or Docker manifest list to its unique Linux AMD64 image child, and deploys the immutable digest.
+Each candidate has a unique Git/run/attempt revision suffix, a temporary tag, and no production traffic.
+Before candidate startup, the helper checks all eleven exact numeric secret references, absence of sensitive plaintext environment values, the runtime account, port 8080, HTTP startup probe, resource settings, and `APP_SEED_RESET_DEMO_DATA=false`.
+The Cloud Run v1 secret-alias annotation must contain exactly the eleven manifest names mapped to the same secret names in project `1089736501943` or `project-4343c1b3-d768-4b8f-bff`, with no missing, extra, or duplicate aliases.
+It leaves unrelated non-secret configuration and secret references unchanged; it does not read secret payloads.
+Revision-level maximum-instance drift remains Stage 5 work, not part of this gate change.
+
+The helper verifies candidate image/source metadata and unchanged environment configuration, then invokes the tagged `/api/health/startup` until an actual HTTP `200` is observed within a bounded five-minute window.
+Deployment-command success or an uninvoked revision is not sufficient.
+Only that verified revision is explicitly promoted to `100%`.
+After promotion, the helper checks reconciled traffic, source/image identity, secret pins, runtime settings, and preserved environment configuration again.
+It removes only its own temporary tag, including after a failed candidate check; other tags are not removed.
+A failed pre-promotion check leaves existing production traffic in place.
+A post-promotion failure fails the release for operator investigation; it does not automatically roll back to an obsolete image or credential configuration.
+
+Command output and runtime metadata are privately captured, never uploaded as artifacts or printed in full.
+Release logs contain fixed status/error codes, verified revision names, and image digests only.
+The Docker context excludes Git metadata, local environment files, build outputs, uploads, worktrees, scratch files, and generated Google authentication files.
+Run `node --test scripts/*.test.mjs` locally to check image, configuration, routing, and workflow guards without contacting production.
+
+Frontend protection is separate.
+Required PR checks gate merging to its `main` branch.
+Vercel native GitHub deployment remains enabled with build command `npm test && npm run build`.
+That build command gates publishing; Vercel does not wait for post-merge GitHub Actions checks.
 
 ## Frontend connection
 
