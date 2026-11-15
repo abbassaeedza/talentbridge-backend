@@ -1,5 +1,8 @@
 # Supabase Secret Key Migration Implementation Plan
 
+> Historical completed migration, not a current release procedure.
+> Use [the current deployment guide](../../DEPLOYMENT.md) for pinned Secret Manager credentials and authenticated verification.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 

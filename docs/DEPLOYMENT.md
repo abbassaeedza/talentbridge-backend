@@ -49,7 +49,8 @@ Any cost recorded before the unlink operation remains payable.
 
 ## Runtime variables
 
-Cloud Run receives these values during the initial deployment:
+Cloud Run receives the following runtime variables.
+Sensitive values use Secret Manager references, not literal environment values.
 
 ```text
 DB_HOST
@@ -85,6 +86,27 @@ The application gives `PORT` precedence over the local `SERVER_PORT` value.
 
 Never commit `.env` or print its values in deployment logs.
 Never expose backend secrets through Vite or Vercel variables.
+
+### Secret Manager
+
+The numeric secret versions in [deploy/secret-pins.json](../deploy/secret-pins.json) are the production credential references.
+The manifest contains resource names and version IDs only, never secret contents.
+Database credentials, signing material, provider keys, bootstrap credentials, and both n8n webhook values stay server-side.
+Public URLs, client IDs, timeouts, bucket names, and other non-secret configuration remain normal environment values.
+Do not create placeholder secrets for disabled integrations.
+
+Grant `roles/secretmanager.secretAccessor` to the runtime account on each required secret, not on the whole project.
+Pass secret contents to `gcloud secrets versions add --data-file=-` through private standard input; never put them in command arguments or logs.
+Deploy numeric versions, not `latest`, so a new version cannot silently change a cold-started instance.
+Do not overwrite production configuration with a local `.env` file.
+
+For rotation, create a new version, update the manifest and runtime reference, invoke the candidate's HTTP readiness endpoint, and verify normal login before routing traffic.
+Verify the exact candidate image digest and preserve all unrelated configuration.
+JWT signing-key rotation requires a new sign-in on every device.
+Demo-password rotation changes only exact managed identities on startup and revokes their prior token versions.
+Operator bootstrap-password rotation does not change an existing operator's database password.
+Keep `APP_SEED_RESET_DEMO_DATA=false` throughout ordinary deployments and credential rotation.
+Old revisions may retain previous environment values in their metadata; restrict Cloud Run configuration access and never route traffic back to obsolete authentication code.
 
 ## Supabase database
 
@@ -200,7 +222,7 @@ gcloud builds submit \
   .
 ```
 
-Deploy the image with the local environment file:
+Deploy the image while preserving the configured environment and numeric secret references:
 
 ```bash
 gcloud run deploy talentbridge-backend \
@@ -217,8 +239,13 @@ gcloud run deploy talentbridge-backend \
   --timeout=120 \
   --port=8080 \
   --cpu-throttling \
-  --env-vars-file=.env
+  --startup-probe=httpGet.path=/api/health/startup,httpGet.port=8080,periodSeconds=5,timeoutSeconds=5,failureThreshold=48 \
+  --no-traffic
 ```
+
+For a new service, configure non-secret variables and the manifest's secret references before testing startup.
+An image deployment alone is not permission to replace runtime credentials.
+Test the tagged candidate, then route explicitly to that verified revision.
 
 ## Automatic deployment
 
@@ -231,7 +258,7 @@ Public access is configured once on the Cloud Run service and is not changed by 
 The workflow builds the Docker image on GitHub.
 It pushes the image to Artifact Registry.
 It deploys a new Cloud Run revision with the same resource limits.
-Existing Cloud Run environment variables remain unchanged.
+Existing Cloud Run non-secret variables and pinned secret references remain unchanged.
 
 ## Frontend connection
 
