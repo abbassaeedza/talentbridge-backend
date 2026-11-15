@@ -69,7 +69,7 @@ class SecurityConfigIntegrationTest {
         when(tokenProvider.parseAccessToken("token")).thenReturn(new JwtTokenProvider.TokenIdentity(userId, 0));
         when(userRepository.findById(userId)).thenReturn(Optional.of(pending));
         when(userService.getById(userId)).thenReturn(pending);
-        when(userService.toResponse(pending)).thenReturn(UserResponse.builder().id(userId).build());
+        when(userService.getMe(userId)).thenReturn(UserResponse.builder().id(userId).build());
 
         mvc.perform(get("/api/users/me").header("Authorization", "Bearer token"))
                 .andExpect(status().isOk());
