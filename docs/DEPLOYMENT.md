@@ -28,8 +28,10 @@ GitHub deployer: github-cloud-run@project-4343c1b3-d768-4b8f-bff.iam.gserviceacc
 ```
 
 Cloud Run uses one CPU and 1 GiB of memory.
-The service keeps zero minimum instances and permits one maximum instance.
+Both service-level and revision-level scaling use zero minimum instances and one maximum instance.
 The service uses request-based CPU allocation and scales to zero when idle.
+Startup CPU boost is enabled, concurrency is 40, and the request timeout is 120 seconds.
+No warm-instance floor or keepalive traffic is configured.
 
 ## Billing controls
 
@@ -235,10 +237,13 @@ gcloud run deploy talentbridge-backend \
   --cpu=1 \
   --min=0 \
   --max=1 \
+  --min-instances=0 \
+  --max-instances=1 \
   --concurrency=40 \
   --timeout=120 \
   --port=8080 \
   --cpu-throttling \
+  --cpu-boost \
   --startup-probe=httpGet.path=/api/health/startup,httpGet.port=8080,periodSeconds=5,timeoutSeconds=5,failureThreshold=48 \
   --no-traffic
 ```
@@ -277,7 +282,14 @@ Each candidate has a unique Git/run/attempt revision suffix, a temporary tag, an
 Before candidate startup, the helper checks all eleven exact numeric secret references, absence of sensitive plaintext environment values, the runtime account, port 8080, HTTP startup probe, resource settings, and `APP_SEED_RESET_DEMO_DATA=false`.
 The Cloud Run v1 secret-alias annotation must contain exactly the eleven manifest names mapped to the same secret names in project `1089736501943` or `project-4343c1b3-d768-4b8f-bff`, with no missing, extra, or duplicate aliases.
 It leaves unrelated non-secret configuration and secret references unchanged; it does not read secret payloads.
-Revision-level maximum-instance drift remains Stage 5 work, not part of this gate change.
+The deployment explicitly sets `--min=0 --max=1 --min-instances=0 --max-instances=1 --cpu-boost` while preserving the resource and HTTP startup settings.
+The preflight retains its existing secret and resource checks and permits a legacy revision maximum of twenty, so the deployment can repair it.
+Desired scaling and boost checks run only after deployment, before any candidate receives production traffic, and again after promotion.
+Both candidate and promotion checks require service `metadata.annotations` keys `run.googleapis.com/minScale` and `run.googleapis.com/maxScale` to mean zero and one.
+They independently require `autoscaling.knative.dev/minScale` and `autoscaling.knative.dev/maxScale` to mean zero and one on both the service's revision template and the actual revision.
+An absent minimum annotation means zero; each maximum must explicitly be `'1'`.
+Both revision annotation sets must explicitly contain `run.googleapis.com/startup-cpu-boost: 'true'`.
+The protected main-branch pipeline applies this configuration; no separate manual rollout is required.
 
 The helper verifies candidate image/source metadata and unchanged environment configuration, then invokes the tagged `/api/health/startup` until an actual HTTP `200` is observed within a bounded five-minute window.
 Deployment-command success or an uninvoked revision is not sufficient.
@@ -339,6 +351,8 @@ Confirm that the Supabase URL and secret key belong to the same project.
 
 Cloud Run starts a new instance after the service scales to zero.
 Later requests remain fast while the instance stays active.
+Observe natural idle through Cloud Run metrics, not periodic HTTP requests that keep the service active.
+Zero minimum instances avoid a configured warm-instance floor, but cold starts and other billable usage remain possible.
 
 ### Startup finishes before fixture maintenance
 

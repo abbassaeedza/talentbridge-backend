@@ -59,6 +59,16 @@ function verifyRuntime(current, revision, before, options) {
   const { pins, sha, image, digests, revision: expected } = options;
   ready(current); ready(revision);
   verifyConfig(revision, pins); verifyConfig(current.spec.template, pins);
+  // Only enforce desired scaling after deployment so legacy max-20 templates can be repaired.
+  const scaling = current.metadata.annotations ?? {};
+  check((scaling['run.googleapis.com/minScale'] ?? '0') === '0'
+    && scaling['run.googleapis.com/maxScale'] === '1', 'SERVICE_SCALING');
+  for (const template of [revision, current.spec.template]) {
+    const annotations = template.metadata.annotations ?? {};
+    check((annotations['autoscaling.knative.dev/minScale'] ?? '0') === '0'
+      && annotations['autoscaling.knative.dev/maxScale'] === '1', 'REVISION_SCALING');
+    check(annotations['run.googleapis.com/startup-cpu-boost'] === 'true', 'CPU_BOOST');
+  }
   check(revision.metadata.name === expected && revision.metadata.labels?.['commit-sha'] === sha
     && current.spec.template.metadata.name === expected && current.spec.template.metadata.labels?.['commit-sha'] === sha, 'SOURCE_REVISION');
   const accepted = digests.map(d => `${image}@${d}`);
@@ -122,7 +132,7 @@ async function release() {
     attempted = true;
     gcloud(['run', 'deploy', service, `--image=${image}@${built}`, `--revision-suffix=${tag}`, `--tag=${tag}`, '--no-traffic',
       `--service-account=${runtime}`, `--labels=commit-sha=${sha}`, '--cpu=1', '--memory=1Gi', '--min=0', '--max=1',
-      '--concurrency=40', '--timeout=120', '--port=8080', '--cpu-throttling',
+      '--min-instances=0', '--max-instances=1', '--concurrency=40', '--timeout=120', '--port=8080', '--cpu-throttling', '--cpu-boost',
       '--startup-probe=httpGet.path=/api/health/startup,httpGet.port=8080,periodSeconds=5,timeoutSeconds=5,failureThreshold=48']);
     const url = verifyCandidate(describeService(), describeRevision(), before, options);
     let healthy = false;
