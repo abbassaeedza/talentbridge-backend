@@ -1,5 +1,8 @@
 # Supabase Secret Key Migration Design
 
+> Historical migration only: production now uses numeric Secret Manager references, not local `.env` uploads.
+> Password-free demo login was removed; use [the current deployment guide](../../DEPLOYMENT.md) and normal credential login for verification.
+
 ## Goal
 
 Replace the deprecated JWT-based Supabase `service_role` key with the new server-only `sb_secret_...` key without retaining a legacy fallback.
