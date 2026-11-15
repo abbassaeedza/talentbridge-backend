@@ -1,40 +1,29 @@
 package com.talentbridge.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.talentbridge.dto.response.ChatContextResponse;
+import com.talentbridge.dto.response.ChatContextResponse.*;
 import com.talentbridge.entity.ApplicationSettings;
-import com.talentbridge.entity.EvaluationReport;
-import com.talentbridge.entity.Party;
-import com.talentbridge.entity.Project;
-import com.talentbridge.entity.Submission;
 import com.talentbridge.entity.User;
-import com.talentbridge.enums.ProjectStatus;
-import com.talentbridge.enums.SubmissionStatus;
-import com.talentbridge.enums.UserRole;
-import com.talentbridge.enums.UserStatus;
-import com.talentbridge.repository.ApplicationRepository;
-import com.talentbridge.repository.ApplicationSettingsRepository;
-import com.talentbridge.repository.PartyRepository;
-import com.talentbridge.repository.ProjectRepository;
-import com.talentbridge.repository.ScorecardRepository;
-import com.talentbridge.repository.SubmissionRepository;
-import com.talentbridge.repository.UserRepository;
+import com.talentbridge.enums.*;
+import com.talentbridge.exception.ForbiddenException;
+import com.talentbridge.repository.*;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
-
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.stream.Collectors;
+import java.time.*;
+import java.util.*;
+import java.util.stream.Stream;
 
 @Service
 @RequiredArgsConstructor
 public class ChatContextService {
+    private static final PageRequest FIRST_50 = PageRequest.of(0, 50);
     private final ProjectRepository projectRepository;
     private final PartyRepository partyRepository;
     private final SubmissionRepository submissionRepository;
@@ -42,246 +31,169 @@ public class ChatContextService {
     private final UserRepository userRepository;
     private final ApplicationSettingsRepository settingsRepository;
     private final ScorecardRepository scorecardRepository;
+    private final EvaluationReportRepository evaluationRepository;
+    private final Clock clock;
+    private final ObjectMapper mapper;
 
     @Transactional(readOnly = true)
-    public String build(User user) {
-        StringBuilder context = new StringBuilder()
-                .append("Snapshot time: ").append(LocalDateTime.now().withNano(0)).append('\n')
-                .append("Authenticated user: ").append(user.getFullName())
-                .append("; role=").append(user.getRole()).append('\n');
-        appendGlobalDeadline(context);
+    public User requireApprovedViewer(UUID userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ForbiddenException("Approved account required"));
+        if (user.getStatus() != UserStatus.APPROVED || user.getRole() == null)
+            throw new ForbiddenException("Approved account required");
+        return user;
+    }
 
-        switch (user.getRole()) {
-            case COORDINATOR -> appendCoordinatorContext(context);
-            case COMPANY -> appendProjectContext(context,
-                    projectRepository.findByCreatedById(user.getId()));
-            case PROJECT_SUPERVISOR -> appendProjectContext(context,
-                    projectRepository.findByProjectSupervisorId(user.getId()));
-            case PARTY_SUPERVISOR -> appendPartySupervisorContext(context, user);
-            case STUDENT -> appendStudentContext(context, user);
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public ChatContextResponse snapshot(UUID userId) {
+        User user = requireApprovedViewer(userId);
+        boolean coordinator = user.getRole() == UserRole.COORDINATOR;
+        boolean company = user.getRole() == UserRole.COMPANY;
+        boolean projectSupervisor = user.getRole() == UserRole.PROJECT_SUPERVISOR;
+        Instant now = clock.instant();
+        var projectCounts = counts(ProjectStatus.class, projectRepository.countChatProjects(userId, coordinator, false));
+        var openCounts = counts(ProjectStatus.class, projectRepository.countChatProjects(userId, coordinator, true));
+        var partyCounts = counts(PartyStatus.class, partyRepository.countChatParties(userId, coordinator, false));
+        var applicationCounts = counts(ApplicationStatus.class,
+                applicationRepository.countChatApplications(userId, coordinator, company, projectSupervisor));
+        var submissionCounts = counts(SubmissionStatus.class, submissionRepository.countChatSubmissions(userId, coordinator));
+        var evaluationCounts = evaluationRepository.countChatEvaluations(userId, coordinator);
+        var open = projectRepository.findChatProjects(userId, coordinator, true, FIRST_50);
+        var projects = projectRepository.findChatProjects(userId, coordinator, false, FIRST_50);
+        var assigned = user.getRole() == UserRole.STUDENT ? projectRepository.findChatAssignedBrief(userId) : Optional.<ProjectRepository.ChatBrief>empty();
+        List<UUID> projectIds = Stream.concat(Stream.concat(open.stream(), projects.stream()), assigned.stream())
+                .map(ProjectRepository.ChatProject::getId).distinct().toList();
+        Map<UUID, Long> applicationTotals = new HashMap<>();
+        if (!projectIds.isEmpty()) projectRepository.countChatApplications(projectIds)
+                .forEach(row -> applicationTotals.put((UUID) row[0], ((Number) row[1]).longValue()));
+        var parties = partyRepository.findChatParties(userId, coordinator, false, FIRST_50).stream().map(this::party).toList();
+        SummarySet<PartySummary> directory = null;
+        if (user.getRole() == UserRole.PARTY_SUPERVISOR) {
+            var directoryCounts = counts(PartyStatus.class, partyRepository.countChatParties(userId, false, true));
+            directory = new SummarySet<>(partyRepository.findChatParties(userId, false, true, FIRST_50)
+                    .stream().map(this::party).toList(), total(directoryCounts));
         }
-        return context.toString();
+        var applications = applicationRepository.findChatApplications(userId, coordinator, company, projectSupervisor, FIRST_50)
+                .stream().map(a -> new ApplicationSummary(a.getId(), a.getPartyId(), a.getPartyName(), a.getProjectId(),
+                        a.getProjectTitle(), a.getRankPosition(), a.getStatus())).toList();
+        var submissions = submissionRepository.findChatSubmissions(userId, coordinator, FIRST_50).stream()
+                .map(s -> new SubmissionSummary(s.getId(), s.getPartyId(), s.getPartyName(), s.getProjectId(),
+                        s.getProjectTitle(), s.getStatus(), utc(s.getSubmittedAt()))).toList();
+        var evaluations = evaluationRepository.findChatEvaluations(userId, coordinator, FIRST_50).stream()
+                .map(e -> new EvaluationSummary(e.getId(), e.getSubmissionId(), e.getProjectId(), e.getFinalized(),
+                        utc(e.getEvaluatedAt()), e.getTotalScore(), e.getAiDetectionScore(), e.getCodeQualityScore(),
+                        e.getFunctionalityScore(), e.getScopeAlignmentScore(), e.getTeamCollaborationScore(),
+                        e.getMyIndividualScore(), e.getMyContributionPercentage(), e.getMyTotalCommits())).toList();
+        long evaluationTotal = evaluationCounts.stream().mapToLong(row -> ((Number) row[1]).longValue()).sum();
+        long finalized = evaluationCounts.stream().filter(row -> Boolean.TRUE.equals(row[0]))
+                .mapToLong(row -> ((Number) row[1]).longValue()).sum();
+        UserCounts users = null;
+        if (coordinator) {
+            var roles = counts(UserRole.class, userRepository.countByRoleGrouped());
+            users = new UserCounts(total(roles), roles, counts(UserStatus.class, userRepository.countByStatusGrouped()));
+        }
+        var global = settingsRepository.findById(ApplicationSettings.ID)
+                .map(s -> new GlobalDeadline(s.isGlobalDeadlineEnabled(), utc(s.getGlobalDeadline())))
+                .orElse(new GlobalDeadline(false, null));
+        LocalDateTime nowUTC = LocalDateTime.ofInstant(now, ZoneOffset.UTC);
+        var deadlines = projectRepository.findChatUpcoming(userId, coordinator, nowUTC, FIRST_50).stream()
+                .map(p -> new DeadlineSummary(p.getId(), p.getTitle(), utc(p.getDeadline()))).toList();
+        return new ChatContextResponse(new Viewer(userId, user.getRole(), user.getFullName()), now, global,
+                new SummarySet<>(open.stream().map(p -> project(p, applicationTotals)).toList(), total(openCounts)),
+                new SummarySet<>(projects.stream().map(p -> project(p, applicationTotals)).toList(), total(projectCounts)),
+                new SummarySet<>(parties, total(partyCounts)), directory,
+                new SummarySet<>(applications, total(applicationCounts)), new SummarySet<>(submissions, total(submissionCounts)),
+                new SummarySet<>(evaluations, evaluationTotal),
+                new Counts(projectCounts, partyCounts, applicationCounts, submissionCounts, finalized, users),
+                assigned.map(p -> brief(p, applicationTotals)).orElse(null),
+                user.getRole() == UserRole.STUDENT ? scorecard(userId) : null,
+                new SummarySet<>(deadlines, projectRepository.countChatUpcoming(userId, coordinator, nowUTC)));
     }
 
-    private void appendCoordinatorContext(StringBuilder context) {
-        appendProjects(context, projectRepository.findAll());
-        appendParties(context, partyRepository.findAll());
-        List<User> allUsers = userRepository.findAll();
-        Map<UserStatus, Long> users = allUsers.stream()
-                .collect(Collectors.groupingBy(User::getStatus, LinkedHashMap::new, Collectors.counting()));
-        context.append("User counts: total=").append(users.values().stream().mapToLong(Long::longValue).sum());
-        Arrays.stream(UserStatus.values()).forEach(status ->
-                context.append(", ").append(status).append('=').append(users.getOrDefault(status, 0L)));
-        context.append('\n');
-        Map<UserRole, Long> roles = allUsers.stream()
-                .collect(Collectors.groupingBy(User::getRole, LinkedHashMap::new, Collectors.counting()));
-        context.append("User role counts:");
-        Arrays.stream(UserRole.values()).forEach(role ->
-                context.append(' ').append(role).append('=').append(roles.getOrDefault(role, 0L)));
-        context.append('\n');
-        context.append("Coordinator user directory:\n");
-        allUsers.stream()
-                .sorted(Comparator.comparing(User::getFullName, String.CASE_INSENSITIVE_ORDER))
-                .limit(200)
-                .forEach(account -> context.append("- user=").append(account.getFullName())
-                        .append("; email=").append(account.getEmail())
-                        .append("; role=").append(account.getRole())
-                        .append("; status=").append(account.getStatus()).append('\n'));
-        appendSubmissionCounts(context, submissionRepository.findAll());
-    }
-
-    private void appendProjectContext(StringBuilder context, List<Project> projects) {
-        appendProjects(context, projects);
-        appendSubmissionCounts(context, projects.stream()
-                .flatMap(project -> submissionRepository.findByProjectId(project.getId()).stream())
-                .toList());
-    }
-
-    private void appendPartySupervisorContext(StringBuilder context, User user) {
-        List<Party> parties = partyRepository.findBySupervisorId(user.getId());
-        context.append("My managed parties:\n");
-        appendParties(context, parties);
-        context.append("Browsable party directory:\n");
-        appendParties(context, partyRepository.findAll());
-        appendProjects(context, parties.stream()
-                .map(Party::getAssignedProject)
-                .filter(java.util.Objects::nonNull)
-                .toList());
-        appendSubmissionCounts(context, parties.stream()
-                .map(party -> submissionRepository.findByPartyId(party.getId()).orElse(null))
-                .filter(java.util.Objects::nonNull)
-                .toList());
-    }
-
-    private void appendStudentContext(StringBuilder context, User user) {
-        Optional<Party> membership = partyRepository.findByMemberId(user.getId());
-        Project assigned = membership.map(Party::getAssignedProject).orElse(null);
-        List<Project> visibleProjects = assigned != null
-                ? List.of(assigned)
-                : new ArrayList<>(projectRepository.findByStatus(ProjectStatus.OPEN, Pageable.unpaged()).getContent());
-        membership.ifPresentOrElse(party -> {
-            context.append("My party: ").append(party.getName())
-                    .append("; status=").append(party.getStatus())
-                    .append("; members=").append(party.getMembers().size())
-                    .append("; partySupervisor=")
-                    .append(party.getSupervisor() == null ? "none" : party.getSupervisor().getFullName())
-                    .append('\n');
-            var applications = applicationRepository.findByPartyIdOrderByRankPositionAsc(party.getId());
-            context.append("My project applications: count=").append(applications.size()).append('\n');
-            applications.stream().limit(20).forEach(application -> context
-                    .append("- rank=").append(application.getRankPosition())
-                    .append("; project=").append(application.getProject().getTitle())
-                    .append("; status=").append(application.getStatus()).append('\n'));
-            submissionRepository.findByPartyId(party.getId()).ifPresent(submission -> {
-                context.append("My submission: status=").append(submission.getStatus())
-                        .append("; project=").append(submission.getProject().getTitle());
-                if (submission.getEvaluationReport() != null) {
-                    context.append("; teamScore=").append(submission.getEvaluationReport().getTotalScore())
-                            .append("; finalized=").append(submission.getEvaluationReport().isFinalized());
+    public String formatForModel(ChatContextResponse snapshot) {
+        ObjectNode json = mapper.valueToTree(snapshot);
+        ((ObjectNode) json.get("viewer")).remove(List.of("id", "name"));
+        removeSupervisorNames(json);
+        List<ObjectNode> sets = new ArrayList<>();
+        collectSets(json, sets);
+        // Preserve valid JSON and exact totals when reducing the model's record budget.
+        while (json.toString().length() > 24000) {
+            boolean removed = false;
+            for (ObjectNode set : sets) {
+                ArrayNode items = (ArrayNode) set.get("items");
+                if (!items.isEmpty()) {
+                    items.remove(items.size() - 1);
+                    set.put("truncated", true);
+                    removed = true;
                 }
-                context.append('\n');
-                if (submission.getEvaluationReport() != null) {
-                    appendStudentEvaluation(context, submission.getEvaluationReport(), user);
-                }
-            });
-        }, () -> context.append("My party: none\n"));
-        scorecardRepository.findByStudentId(user.getId()).ifPresentOrElse(scorecard -> {
-            context.append("My scorecard: averageScore=").append(scorecard.getAverageScore())
-                    .append("; totalProjects=").append(scorecard.getTotalProjects()).append('\n');
-            scorecard.getEntries().stream().limit(20).forEach(entry -> context
-                    .append("- scorecardProject=").append(entry.getProject().getTitle())
-                    .append("; score=").append(entry.getScore())
-                    .append("; semester=").append(entry.getSemester())
-                    .append("; academicYear=").append(entry.getAcademicYear()).append('\n'));
-        }, () -> context.append("My scorecard: no evaluated projects yet\n"));
-        if (assigned != null) appendProjectBrief(context, assigned);
-        appendProjects(context, visibleProjects);
-    }
-
-    private void appendProjectBrief(StringBuilder context, Project project) {
-        context.append("My assigned project brief: ").append(project.getTitle())
-                .append("; status=").append(project.getStatus())
-                .append("; deadline=").append(project.getDeadline()).append('\n');
-        appendBriefField(context, "description", project.getDescription());
-        appendBriefField(context, "scope", project.getScope());
-        appendBriefField(context, "deliverables", project.getDeliverables());
-        appendBriefField(context, "evaluationCriteria", project.getEvaluationCriteria());
-    }
-
-    private void appendBriefField(StringBuilder context, String label, String value) {
-        if (value == null || value.isBlank()) return;
-        String text = value.strip().replaceAll("\\s+", " ");
-        if (text.length() > 1500) text = text.substring(0, 1500) + "...";
-        context.append("- ").append(label).append(": ").append(text).append('\n');
-    }
-
-    private void appendStudentEvaluation(StringBuilder context, EvaluationReport report, User student) {
-        context.append("My evaluation weighting: AI authenticity=20%, code quality=25%, functionality=25%, "
-                + "scope alignment=20%, team collaboration=10%\n")
-                .append("- AI authenticity: score=").append(report.getAiDetectionScore())
-                .append("/100; reason=").append(report.getAiDetectionNotes()).append('\n')
-                .append("- Code quality: score=").append(report.getCodeQualityScore())
-                .append("/100; reason=").append(report.getCodeQualityNotes()).append('\n')
-                .append("- Functionality: score=").append(report.getFunctionalityScore())
-                .append("/100; reason=").append(report.getFunctionalityNotes()).append('\n')
-                .append("- Scope alignment: score=").append(report.getScopeAlignmentScore())
-                .append("/100; reason=").append(report.getScopeAlignmentNotes()).append('\n')
-                .append("- Team collaboration: score=").append(report.getTeamCollaborationScore())
-                .append("/100; reason=").append(report.getTeamCollaborationNotes()).append('\n')
-                .append("- Team total: ").append(report.getTotalScore()).append("/100; summary=")
-                .append(report.getOverallSummary()).append('\n');
-        report.getStudentScores().stream()
-                .filter(score -> score.getStudent().getId().equals(student.getId()))
-                .findFirst()
-                .ifPresent(score -> context.append("My individual evaluation: score=")
-                        .append(score.getIndividualScore()).append("/100; commits=")
-                        .append(score.getTotalCommits()).append("; contribution=")
-                        .append(score.getContributionPercentage()).append("%; reason=")
-                        .append(score.getPerformanceNotes()).append('\n'));
-    }
-
-    private void appendGlobalDeadline(StringBuilder context) {
-        settingsRepository.findById(ApplicationSettings.ID).ifPresentOrElse(settings -> context
-                        .append("Global deadline: enabled=").append(settings.isGlobalDeadlineEnabled())
-                        .append("; deadline=").append(settings.getGlobalDeadline()).append('\n'),
-                () -> context.append("Global deadline: not configured\n"));
-    }
-
-    private void appendProjects(StringBuilder context, List<Project> projects) {
-        Map<ProjectStatus, Long> counts = projects.stream()
-                .collect(Collectors.groupingBy(Project::getStatus, LinkedHashMap::new, Collectors.counting()));
-        long finishedWorkflow = projects.stream().filter(this::isFinished).count();
-        long unfinished = projects.stream().filter(project -> !isFinished(project)
-                && project.getStatus() != ProjectStatus.ARCHIVED).count();
-        long assignedInProgress = projects.stream().filter(project -> project.getStatus() == ProjectStatus.ASSIGNED
-                && !isFinished(project)).count();
-        long unassignedActive = projects.stream().filter(project -> project.getStatus() == ProjectStatus.OPEN
-                || project.getStatus() == ProjectStatus.PENDING_REVIEW).count();
-        context.append("Project counts: total=").append(projects.size())
-                .append(", assigned=").append(counts.getOrDefault(ProjectStatus.ASSIGNED, 0L))
-                .append(", assignedInProgress=").append(assignedInProgress)
-                .append(", openAvailable=").append(counts.getOrDefault(ProjectStatus.OPEN, 0L))
-                .append(", pendingReview=").append(counts.getOrDefault(ProjectStatus.PENDING_REVIEW, 0L))
-                .append(", drafts=").append(counts.getOrDefault(ProjectStatus.DRAFT, 0L))
-                .append(", closedFinished=").append(counts.getOrDefault(ProjectStatus.CLOSED, 0L))
-                .append(", archived=").append(counts.getOrDefault(ProjectStatus.ARCHIVED, 0L))
-                .append(", finishedWorkflow=").append(finishedWorkflow)
-                .append(", unfinished=").append(unfinished)
-                .append(", unassignedActive=").append(unassignedActive).append('\n');
-        projects.stream()
-                .sorted(Comparator.comparing(Project::getTitle, String.CASE_INSENSITIVE_ORDER))
-                .limit(50)
-                .forEach(project -> context.append("- project=").append(project.getTitle())
-                        .append("; status=").append(project.getStatus())
-                        .append("; applications=")
-                        .append(projectRepository.countApplicationsByProjectId(project.getId()))
-                        .append("; deadline=").append(project.getDeadline())
-                        .append("; party=").append(project.getAssignedParty() == null
-                                ? "none" : project.getAssignedParty().getName())
-                        .append("; projectSupervisor=").append(project.getProjectSupervisor() == null
-                                ? "none" : project.getProjectSupervisor().getFullName())
-                        .append('\n'));
-    }
-
-    private boolean isFinished(Project project) {
-        if (project.getStatus() == ProjectStatus.CLOSED) return true;
-        Party party = project.getAssignedParty();
-        if (party == null) return false;
-        if (party.getStatus() == com.talentbridge.enums.PartyStatus.SUBMITTED
-                || party.getStatus() == com.talentbridge.enums.PartyStatus.COMPLETED) return true;
-        Submission submission = party.getSubmission();
-        return submission != null && submission.getStatus() != SubmissionStatus.DRAFT;
-    }
-
-    private void appendParties(StringBuilder context, List<Party> parties) {
-        context.append("Party counts: total=").append(parties.size()).append('\n');
-        parties.stream().limit(50).forEach(party -> context.append("- party=").append(party.getName())
-                .append("; status=").append(party.getStatus())
-                .append("; members=").append(party.getMembers().size())
-                .append("; project=").append(party.getAssignedProject() == null
-                        ? "none" : party.getAssignedProject().getTitle())
-                .append("; partySupervisor=").append(party.getSupervisor() == null
-                        ? "none" : party.getSupervisor().getFullName())
-                .append('\n'));
-    }
-
-    private void appendSubmissionCounts(StringBuilder context, List<Submission> submissions) {
-        Map<SubmissionStatus, Long> counts = submissions.stream()
-                .collect(Collectors.groupingBy(Submission::getStatus, LinkedHashMap::new, Collectors.counting()));
-        context.append("Submission counts: total=").append(submissions.size());
-        Arrays.stream(SubmissionStatus.values()).forEach(status ->
-                context.append(", ").append(status).append('=').append(counts.getOrDefault(status, 0L)));
-        context.append('\n');
-        submissions.stream().limit(50).forEach(submission -> {
-            context.append("- submissionProject=").append(submission.getProject().getTitle())
-                    .append("; party=").append(submission.getParty().getName())
-                    .append("; status=").append(submission.getStatus());
-            if (submission.getEvaluationReport() != null) {
-                context.append("; evaluationScore=").append(submission.getEvaluationReport().getTotalScore())
-                        .append("; evaluationFinalized=").append(submission.getEvaluationReport().isFinalized())
-                        .append("; evaluationSummary=").append(submission.getEvaluationReport().getOverallSummary());
             }
-            context.append('\n');
-        });
+            if (!removed) {
+                JsonNode brief = json.path("myAssignedProject");
+                String largest = null;
+                for (String field : List.of("description", "scope", "deliverables", "evaluationCriteria")) {
+                    JsonNode value = brief.path(field);
+                    if (value.isTextual() && !value.asText().isEmpty()
+                            && (largest == null || value.toString().length() > brief.path(largest).toString().length()))
+                        largest = field;
+                }
+                if (largest == null) throw new IllegalStateException("Chat context exceeds its record budget");
+                String text = brief.path(largest).asText();
+                ((ObjectNode) brief).put(largest, text.substring(0, text.length() / 2));
+                ArrayNode clipped = (ArrayNode) brief.path("truncatedFields");
+                boolean alreadyMarked = false;
+                for (JsonNode field : clipped) if (largest.equals(field.asText())) alreadyMarked = true;
+                if (!alreadyMarked) clipped.add(largest);
+            }
+        }
+        return json.toString();
     }
+
+    private void removeSupervisorNames(JsonNode node) {
+        if (node instanceof ObjectNode object) object.remove("supervisorName");
+        node.forEach(this::removeSupervisorNames);
+    }
+    private void collectSets(JsonNode node, List<ObjectNode> sets) {
+        if (node instanceof ObjectNode object && object.get("items") instanceof ArrayNode) sets.add(object);
+        node.forEach(child -> collectSets(child, sets));
+    }
+    private ProjectSummary project(ProjectRepository.ChatProject p, Map<UUID, Long> applications) {
+        return new ProjectSummary(p.getId(), p.getTitle(), p.getStatus(), p.getCompanyName(), utc(p.getDeadline()),
+                p.getFinished(), applications.getOrDefault(p.getId(), 0L));
+    }
+    private PartySummary party(PartyRepository.ChatParty p) {
+        return new PartySummary(p.getId(), p.getName(), p.getStatus(), p.getMemberCount(), p.getSupervisorName(),
+                p.getAssignedProjectId(), p.getViewerIsLeader());
+    }
+    private ProjectBrief brief(ProjectRepository.ChatBrief p, Map<UUID, Long> applications) {
+        List<String> clipped = new ArrayList<>();
+        var tools = projectRepository.findChatTools(p.getId(), PageRequest.of(0, 21));
+        if (tools.size() > 20 || tools.stream().anyMatch(tool -> tool.length() > 100)) clipped.add("tools");
+        return new ProjectBrief(p.getId(), p.getTitle(), p.getStatus(), p.getCompanyName(), utc(p.getDeadline()),
+                p.getFinished(), applications.getOrDefault(p.getId(), 0L),
+                clip(p.getDescription(), "description", clipped), clip(p.getScope(), "scope", clipped),
+                clip(p.getDeliverables(), "deliverables", clipped), clip(p.getEvaluationCriteria(), "evaluationCriteria", clipped),
+                tools.stream().limit(20).map(tool -> tool.substring(0, Math.min(100, tool.length()))).toList(),
+                p.getProjectField(), List.copyOf(clipped));
+    }
+    private String clip(String text, String field, List<String> clipped) {
+        if (text == null || text.length() <= 1500) return text;
+        clipped.add(field);
+        return text.substring(0, 1500);
+    }
+    private MyScorecard scorecard(UUID userId) {
+        return scorecardRepository.findChatScorecard(userId).map(s -> new MyScorecard(s.getAverageScore(),
+                s.getTotalProjects() == null ? 0 : s.getTotalProjects(),
+                new SummarySet<>(scorecardRepository.findChatEntries(userId, FIRST_50).stream()
+                        .map(e -> new ScorecardEntrySummary(e.getId(), e.getProjectId(), e.getProjectTitle(), e.getScore(),
+                                e.getSemester(), e.getAcademicYear())).toList(), scorecardRepository.countChatEntries(userId))))
+                .orElse(null);
+    }
+    private static Instant utc(LocalDateTime value) { return value == null ? null : value.toInstant(ZoneOffset.UTC); }
+    private static <E extends Enum<E>> Map<E, Long> counts(Class<E> type, List<Object[]> rows) {
+        Map<E, Long> counts = new EnumMap<>(type);
+        for (E key : type.getEnumConstants()) counts.put(key, 0L);
+        rows.forEach(row -> counts.put(type.cast(row[0]), ((Number) row[1]).longValue()));
+        return counts;
+    }
+    private static long total(Map<?, Long> counts) { return counts.values().stream().mapToLong(Long::longValue).sum(); }
 }

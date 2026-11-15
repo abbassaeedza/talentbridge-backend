@@ -13,6 +13,13 @@ import java.util.*;
 
 @RestControllerAdvice @Slf4j
 public class GlobalExceptionHandler {
+    @ExceptionHandler(AiQuotaExceededException.class)
+    public ResponseEntity<QuotaError> aiQuota(AiQuotaExceededException e) {
+        return ResponseEntity.status(429)
+                .header(HttpHeaders.RETRY_AFTER, Long.toString(e.getRetryAfterSeconds()))
+                .body(new QuotaError(e));
+    }
+
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<ApiError> notFound(ResourceNotFoundException e) {
         return ResponseEntity.status(404).body(new ApiError(404, e.getMessage()));
@@ -49,6 +56,20 @@ public class GlobalExceptionHandler {
         }
         log.error("Unhandled exception", e);
         return ResponseEntity.status(500).body(new ApiError(500, "An unexpected error occurred"));
+    }
+
+    public static class QuotaError extends ApiError {
+        private final String reason;
+        private final long retryAfterSeconds;
+
+        public QuotaError(AiQuotaExceededException e) {
+            super(429, e.getMessage());
+            reason = e.getReason().name();
+            retryAfterSeconds = e.getRetryAfterSeconds();
+        }
+
+        public String getReason() { return reason; }
+        public long getRetryAfterSeconds() { return retryAfterSeconds; }
     }
 
     @Data

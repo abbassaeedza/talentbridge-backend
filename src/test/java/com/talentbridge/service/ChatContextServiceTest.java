@@ -1,168 +1,156 @@
 package com.talentbridge.service;
 
-import com.talentbridge.entity.EvaluationReport;
-import com.talentbridge.entity.Party;
-import com.talentbridge.entity.Project;
-import com.talentbridge.entity.Scorecard;
-import com.talentbridge.entity.ScorecardEntry;
-import com.talentbridge.entity.StudentEvaluationScore;
-import com.talentbridge.entity.Submission;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.talentbridge.entity.User;
-import com.talentbridge.enums.PartyStatus;
-import com.talentbridge.enums.ProjectStatus;
-import com.talentbridge.enums.SubmissionStatus;
-import com.talentbridge.enums.UserRole;
-import com.talentbridge.enums.UserStatus;
-import com.talentbridge.repository.ApplicationRepository;
-import com.talentbridge.repository.ApplicationSettingsRepository;
-import com.talentbridge.repository.PartyRepository;
-import com.talentbridge.repository.ProjectRepository;
-import com.talentbridge.repository.ScorecardRepository;
-import com.talentbridge.repository.SubmissionRepository;
-import com.talentbridge.repository.UserRepository;
+import com.talentbridge.enums.*;
+import com.talentbridge.exception.ForbiddenException;
+import com.talentbridge.repository.*;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.springframework.data.domain.Pageable;
+import java.time.*;
+import java.util.*;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
-import java.util.List;
-import java.util.Optional;
-import java.util.Set;
-import java.util.UUID;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.when;
-
-@ExtendWith(MockitoExtension.class)
 class ChatContextServiceTest {
-    @Mock private ProjectRepository projectRepository;
-    @Mock private PartyRepository partyRepository;
-    @Mock private SubmissionRepository submissionRepository;
-    @Mock private ApplicationRepository applicationRepository;
-    @Mock private UserRepository userRepository;
-    @Mock private ApplicationSettingsRepository settingsRepository;
-    @Mock private ScorecardRepository scorecardRepository;
+    ProjectRepository projects = mock(ProjectRepository.class);
+    PartyRepository parties = mock(PartyRepository.class);
+    SubmissionRepository submissions = mock(SubmissionRepository.class);
+    ApplicationRepository applications = mock(ApplicationRepository.class);
+    UserRepository users = mock(UserRepository.class);
+    ApplicationSettingsRepository settings = mock(ApplicationSettingsRepository.class);
+    ScorecardRepository scorecards = mock(ScorecardRepository.class);
+    EvaluationReportRepository evaluations = mock(EvaluationReportRepository.class);
+    ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+    Instant now = Instant.parse("2031-01-01T12:00:00Z");
+    ChatContextService service = new ChatContextService(projects, parties, submissions, applications,
+            users, settings, scorecards, evaluations, Clock.fixed(now, ZoneOffset.UTC), mapper);
+    User user;
 
-    @Test
-    void givesTheCoordinatorCurrentProjectCounts() {
-        User coordinator = User.builder()
-                .firstName("System")
-                .lastName("Coordinator")
-                .role(UserRole.COORDINATOR)
-                .status(UserStatus.APPROVED)
-                .build();
-        coordinator.setId(UUID.randomUUID());
-        User student = User.builder()
-                .firstName("Demo")
-                .lastName("Student")
-                .role(UserRole.STUDENT)
-                .status(UserStatus.PENDING)
-                .build();
-        student.setId(UUID.randomUUID());
-        when(settingsRepository.findById((short) 1)).thenReturn(Optional.empty());
-        when(projectRepository.findAll()).thenReturn(List.of(
-                project("Assigned project", ProjectStatus.ASSIGNED),
-                project("Open one", ProjectStatus.OPEN),
-                project("Open two", ProjectStatus.OPEN),
-                project("Finished", ProjectStatus.CLOSED)));
-        when(partyRepository.findAll()).thenReturn(List.of());
-        when(userRepository.findAll()).thenReturn(List.of(coordinator, student));
-        when(submissionRepository.findAll()).thenReturn(List.of());
-
-        String context = new ChatContextService(projectRepository, partyRepository,
-                submissionRepository, applicationRepository, userRepository, settingsRepository,
-                scorecardRepository)
-                .build(coordinator);
-
-        assertTrue(context.contains("role=COORDINATOR"));
-        assertTrue(context.contains("total=4, assigned=1, assignedInProgress=1, openAvailable=2"));
-        assertTrue(context.contains("finishedWorkflow=1, unfinished=3, unassignedActive=2"));
-        assertTrue(context.contains("User role counts: STUDENT=1"));
-        assertTrue(context.contains("PENDING=1"));
-        assertTrue(context.contains("Coordinator user directory:"));
-        assertTrue(context.contains("user=Demo Student"));
+    @BeforeEach
+    void fixture() {
+        user = User.builder().firstName("Private").lastName("Viewer").email("private@example.test")
+                .githubAccessToken("private-token").role(UserRole.STUDENT).status(UserStatus.APPROVED).build();
+        user.setId(UUID.randomUUID());
+        when(users.findById(user.getId())).thenReturn(Optional.of(user));
     }
 
     @Test
-    void givesAStudentTheirScorecardAndEvaluationBreakdown() {
-        User student = User.builder()
-                .firstName("Demo")
-                .lastName("Student")
-                .role(UserRole.STUDENT)
-                .status(UserStatus.APPROVED)
-                .build();
-        student.setId(UUID.randomUUID());
-        Project project = project("Student project", ProjectStatus.CLOSED);
-        project.setScope("In scope: build the monitor. Out of scope: alerting.");
-        project.setDeliverables("Source code, README, tests, final demo.");
-        project.setEvaluationCriteria("Functionality, code quality, scope alignment.");
-        StudentEvaluationScore individual = StudentEvaluationScore.builder()
-                .student(student)
-                .totalCommits(7)
-                .contributionPercentage(70.0)
-                .individualScore(76.0)
-                .performanceNotes("Good contribution with limited tests")
-                .build();
-        EvaluationReport report = EvaluationReport.builder()
-                .aiDetectionScore(80.0).aiDetectionNotes("Mostly authentic")
-                .codeQualityScore(70.0).codeQualityNotes("Needs documentation")
-                .functionalityScore(75.0).functionalityNotes("Core flow works")
-                .scopeAlignmentScore(60.0).scopeAlignmentNotes("One deliverable missing")
-                .teamCollaborationScore(50.0).teamCollaborationNotes("Uneven commits")
-                .totalScore(69.25).overallSummary("Functional but incomplete")
-                .studentScores(List.of(individual))
-                .build();
-        Party party = Party.builder()
-                .name("Demo party")
-                .status(PartyStatus.SUBMITTED)
-                .members(Set.of(student))
-                .assignedProject(project)
-                .build();
-        party.setId(UUID.randomUUID());
-        Submission submission = Submission.builder()
-                .party(party)
-                .project(project)
-                .status(SubmissionStatus.EVALUATED)
-                .evaluationReport(report)
-                .build();
-        ScorecardEntry entry = ScorecardEntry.builder()
-                .project(project)
-                .score(82.0)
-                .semester("Fall")
-                .academicYear(2026)
-                .build();
-        Scorecard scorecard = Scorecard.builder()
-                .student(student)
-                .averageScore(82.0)
-                .totalProjects(1)
-                .entries(List.of(entry))
-                .build();
-        when(settingsRepository.findById((short) 1)).thenReturn(Optional.empty());
-        when(partyRepository.findByMemberId(student.getId())).thenReturn(Optional.of(party));
-        when(applicationRepository.findByPartyIdOrderByRankPositionAsc(party.getId()))
-                .thenReturn(List.of());
-        when(submissionRepository.findByPartyId(party.getId())).thenReturn(Optional.of(submission));
-        when(scorecardRepository.findByStudentId(student.getId())).thenReturn(Optional.of(scorecard));
+    void assignedStudentStillGetsOpenProjectsExactTotalsAndIndependentDeadlines() {
+        var assigned = mock(ProjectRepository.ChatBrief.class);
+        UUID projectId = UUID.randomUUID();
+        when(assigned.getId()).thenReturn(projectId);
+        when(assigned.getTitle()).thenReturn("Assigned");
+        when(assigned.getStatus()).thenReturn(ProjectStatus.ASSIGNED);
+        when(assigned.getScope()).thenReturn("x".repeat(1501));
+        when(projects.findChatAssignedBrief(user.getId())).thenReturn(Optional.of(assigned));
+        var open = mock(ProjectRepository.ChatProject.class);
+        when(open.getId()).thenReturn(UUID.randomUUID());
+        when(open.getTitle()).thenReturn("Open");
+        when(open.getStatus()).thenReturn(ProjectStatus.OPEN);
+        when(projects.findChatProjects(eq(user.getId()), eq(false), eq(true), any())).thenReturn(List.of(open));
+        when(projects.countChatProjects(user.getId(), false, true))
+                .thenReturn(List.<Object[]>of(new Object[]{ProjectStatus.OPEN, 51L}));
+        when(projects.countChatApplications(anyList())).thenReturn(List.<Object[]>of(new Object[]{projectId, 7L}));
+        var deadline = mock(ProjectRepository.ChatProject.class);
+        when(deadline.getId()).thenReturn(UUID.randomUUID());
+        when(deadline.getTitle()).thenReturn("Outside first fifty");
+        when(deadline.getDeadline()).thenReturn(LocalDateTime.of(2031, 1, 2, 0, 0));
+        when(projects.findChatUpcoming(eq(user.getId()), eq(false), any(), any())).thenReturn(List.of(deadline));
+        when(projects.countChatUpcoming(eq(user.getId()), eq(false), any())).thenReturn(60L);
 
-        String context = new ChatContextService(projectRepository, partyRepository,
-                submissionRepository, applicationRepository, userRepository, settingsRepository,
-                scorecardRepository)
-                .build(student);
+        var snapshot = service.snapshot(user.getId());
 
-        assertTrue(context.contains("My scorecard: averageScore=82.0; totalProjects=1"));
-        assertTrue(context.contains("scorecardProject=Student project; score=82.0"));
-        assertTrue(context.contains("AI authenticity=20%, code quality=25%, functionality=25%"));
-        assertTrue(context.contains("Scope alignment: score=60.0/100; reason=One deliverable missing"));
-        assertTrue(context.contains("My individual evaluation: score=76.0/100; commits=7; contribution=70.0%"));
-        assertTrue(context.contains("My assigned project brief: Student project"));
-        assertTrue(context.contains("- scope: In scope: build the monitor. Out of scope: alerting."));
-        assertTrue(context.contains("- deliverables: Source code, README, tests, final demo."));
-        assertTrue(context.contains("- evaluationCriteria: Functionality, code quality, scope alignment."));
+        assertEquals(now, snapshot.snapshotTimeUTC());
+        assertEquals("Open", snapshot.openProjects().items().get(0).title());
+        assertEquals(51, snapshot.openProjects().total());
+        assertTrue(snapshot.openProjects().truncated());
+        assertEquals(7, snapshot.myAssignedProject().partyApplicationCount());
+        assertEquals(1500, snapshot.myAssignedProject().scope().length());
+        assertEquals(List.of("scope"), snapshot.myAssignedProject().truncatedFields());
+        assertEquals(60, snapshot.upcomingDeadlines().total());
+        assertEquals(Instant.parse("2031-01-02T00:00:00Z"), snapshot.upcomingDeadlines().items().get(0).deadlineUTC());
+        verify(projects).findChatUpcoming(eq(user.getId()), eq(false), eq(LocalDateTime.of(2031,1,1,12,0)),
+                argThat(page -> page.getPageSize() == 50 && page.getOffset() == 0));
+        verify(projects, never()).findAll();
+        verify(projects, never()).countApplicationsByProjectId(any());
+        assertNull(snapshot.counts().users());
     }
 
-    private Project project(String title, ProjectStatus status) {
-        Project project = Project.builder().title(title).status(status).build();
-        project.setId(UUID.randomUUID());
-        return project;
+    @Test
+    void coordinatorUsesAggregatesWithoutDirectoryOrEmailAndFormatterStripsIdentity() throws Exception {
+        user.setRole(UserRole.COORDINATOR);
+        when(users.countByRoleGrouped()).thenReturn(List.<Object[]>of(new Object[]{UserRole.STUDENT, 201L}));
+        when(users.countByStatusGrouped()).thenReturn(List.<Object[]>of(new Object[]{UserStatus.APPROVED, 201L}));
+        var snapshot = service.snapshot(user.getId());
+        assertEquals(201, snapshot.counts().users().total());
+        assertEquals(0L, snapshot.counts().users().byStatus().get(UserStatus.PENDING));
+        String wire = mapper.writeValueAsString(snapshot);
+        assertTrue(wire.contains("Private Viewer"));
+        assertFalse(wire.contains("private@example.test"));
+        assertFalse(wire.contains("private-token"));
+        var model = mapper.readTree(service.formatForModel(snapshot));
+        assertEquals("COORDINATOR", model.path("viewer").path("role").asText());
+        assertFalse(model.path("viewer").has("id"));
+        assertFalse(model.path("viewer").has("name"));
+        verify(users, never()).findAll();
+    }
+
+    @Test
+    void modelBudgetKeepsJsonAndCountsWithoutMutatingSnapshot() throws Exception {
+        var row = mock(ProjectRepository.ChatProject.class);
+        when(row.getId()).thenReturn(UUID.randomUUID());
+        when(row.getTitle()).thenReturn("t".repeat(100));
+        when(row.getCompanyName()).thenReturn("c".repeat(255));
+        when(row.getStatus()).thenReturn(ProjectStatus.OPEN);
+        var fifty = Collections.nCopies(50, row);
+        when(projects.findChatProjects(eq(user.getId()), eq(false), anyBoolean(), any(Pageable.class))).thenReturn(fifty);
+        when(projects.countChatProjects(eq(user.getId()), eq(false), anyBoolean()))
+                .thenReturn(List.<Object[]>of(new Object[]{ProjectStatus.OPEN, 50L}));
+        var snapshot = service.snapshot(user.getId());
+        String formatted = service.formatForModel(snapshot);
+        assertTrue(formatted.length() <= 24000);
+        var model = mapper.readTree(formatted);
+        assertEquals(50, model.path("projects").path("total").asInt());
+        assertTrue(model.path("projects").path("truncated").asBoolean());
+        assertEquals(50, snapshot.projects().items().size());
+        assertFalse(snapshot.projects().truncated());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = UserStatus.class, names = {"PENDING", "REJECTED", "SUSPENDED"})
+    void rejectsNonApprovedUsersBeforeAnyContextQuery(UserStatus status) {
+        user.setStatus(status);
+        assertThrows(ForbiddenException.class, () -> service.snapshot(user.getId()));
+        verifyNoInteractions(projects, parties, submissions, applications, evaluations, scorecards, settings);
+    }
+
+    @Test
+    void escapedSingletonBriefStaysWithinSerializedBudgetAndMarksClipping() throws Exception {
+        var assigned = mock(ProjectRepository.ChatBrief.class);
+        when(assigned.getId()).thenReturn(UUID.randomUUID());
+        when(assigned.getTitle()).thenReturn("Assigned");
+        when(assigned.getStatus()).thenReturn(ProjectStatus.ASSIGNED);
+        String escaped = "\u0001".repeat(1500);
+        when(assigned.getDescription()).thenReturn(escaped);
+        when(assigned.getScope()).thenReturn(escaped);
+        when(assigned.getDeliverables()).thenReturn(escaped);
+        when(assigned.getEvaluationCriteria()).thenReturn(escaped);
+        when(projects.findChatAssignedBrief(user.getId())).thenReturn(Optional.of(assigned));
+        var snapshot = service.snapshot(user.getId());
+
+        String formatted = service.formatForModel(snapshot);
+
+        assertTrue(formatted.length() <= 24000);
+        var model = mapper.readTree(formatted);
+        assertTrue(model.path("myAssignedProject").path("truncatedFields").size() > 0);
+        assertEquals(assigned.getId().toString(), model.path("myAssignedProject").path("id").asText());
+        assertEquals(0, model.path("projects").path("total").asInt());
+        assertEquals(escaped, snapshot.myAssignedProject().description());
+        assertTrue(snapshot.myAssignedProject().truncatedFields().isEmpty());
     }
 }
