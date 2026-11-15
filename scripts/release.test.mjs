@@ -16,6 +16,8 @@ const manifest = { schemaVersion: 2, mediaType: 'application/vnd.oci.image.index
 ] };
 const template = () => ({ metadata: { annotations: {
   'run.googleapis.com/cpu-throttling': 'true', 'run.googleapis.com/secrets': aliases(),
+  'run.googleapis.com/startup-cpu-boost': 'true',
+  'autoscaling.knative.dev/minScale': '0', 'autoscaling.knative.dev/maxScale': '1',
 } }, spec: {
   serviceAccountName: 'talentbridge-runtime@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com',
   containerConcurrency: 40, timeoutSeconds: 120,
@@ -27,7 +29,9 @@ const template = () => ({ metadata: { annotations: {
   }],
 } });
 const ready = { observedGeneration: 1, conditions: [{ type: 'Ready', status: 'True' }] };
-const service = () => ({ metadata: { generation: 1 }, spec: { template: template(), traffic: [{ revisionName: 'previous', percent: 100 }] },
+const service = () => ({ metadata: { generation: 1, annotations: {
+  'run.googleapis.com/minScale': '0', 'run.googleapis.com/maxScale': '1',
+} }, spec: { template: template(), traffic: [{ revisionName: 'previous', percent: 100 }] },
   status: { ...structuredClone(ready), traffic: [{ revisionName: 'previous', percent: 100 }] } });
 const candidate = () => ({ ...template(), metadata: { ...template().metadata, name: revision, generation: 1, labels: { 'commit-sha': sha } },
   status: { ...structuredClone(ready), imageDigest: `${image}@${child}` } });
@@ -39,7 +43,79 @@ const tagged = () => {
   value.status.traffic.push({ revisionName: revision, tag, url: 'https://candidate---service.a.run.app' });
   return value;
 };
+const legacyService = () => {
+  const value = service();
+  delete value.metadata.annotations['run.googleapis.com/minScale'];
+  delete value.spec.template.metadata.annotations['autoscaling.knative.dev/minScale'];
+  value.spec.template.metadata.annotations['autoscaling.knative.dev/maxScale'] = '20';
+  value.spec.template.spec.containers[0].resources.limits.cpu = '1';
+  return value;
+};
+const promoted = () => {
+  const value = tagged();
+  value.spec.traffic[0] = { revisionName: revision, percent: 100 };
+  value.status.traffic[0] = { revisionName: revision, percent: 100 };
+  return value;
+};
 const rejects = (fn, code) => assert.throws(fn, error => error.message === code);
+
+test('legacy max-20 baseline passes unchanged preflight and permits an exact repaired candidate and promotion', () => {
+  const before = legacyService(), original = structuredClone(before);
+  verifyConfig(before.spec.template, pins);
+  assert.equal(verifyCandidate(tagged(), candidate(), before, options), 'https://candidate---service.a.run.app');
+  verifyPromotion(promoted(), candidate(), before, options);
+  assert.deepEqual(before, original);
+  for (const [verify, current] of [[verifyCandidate, tagged()], [verifyPromotion, promoted()]]) {
+    current.spec.template.metadata.annotations['autoscaling.knative.dev/maxScale'] = '20';
+    rejects(() => verify(current, candidate(), before, options), 'REVISION_SCALING');
+  }
+});
+
+test('candidate and promotion reject warm service minima and missing or mismatched service maxima', () => {
+  for (const verify of [verifyCandidate, verifyPromotion]) {
+    for (const [key, values] of [
+      ['run.googleapis.com/minScale', ['1', '20', '-1', '', 'default', 0, false]],
+      ['run.googleapis.com/maxScale', ['20', '0', undefined, '', 'default', 1, false]],
+    ]) {
+      for (const value of values) {
+        const current = verify === verifyCandidate ? tagged() : promoted();
+        current.metadata.annotations[key] = value;
+        rejects(() => verify(current, candidate(), legacyService(), options), 'SERVICE_SCALING');
+      }
+    }
+    const current = verify === verifyCandidate ? tagged() : promoted();
+    delete current.metadata.annotations;
+    rejects(() => verify(current, candidate(), legacyService(), options), 'SERVICE_SCALING');
+  }
+});
+
+test('candidate and promotion guard both template and actual revision scaling and explicit CPU boost', () => {
+  for (const verify of [verifyCandidate, verifyPromotion]) {
+    for (const target of ['template', 'revision']) {
+      for (const [key, values, code] of [
+        ['autoscaling.knative.dev/minScale', ['1', '20', '-1', '', 'default', 0, false], 'REVISION_SCALING'],
+        ['autoscaling.knative.dev/maxScale', ['20', '0', undefined, '', 'default', 1, false], 'REVISION_SCALING'],
+        ['run.googleapis.com/startup-cpu-boost', ['false', undefined, '', true], 'CPU_BOOST'],
+      ]) {
+        for (const value of values) {
+          const current = verify === verifyCandidate ? tagged() : promoted(), actual = candidate();
+          (target === 'template' ? current.spec.template : actual).metadata.annotations[key] = value;
+          rejects(() => verify(current, actual, legacyService(), options), code);
+        }
+      }
+    }
+  }
+});
+
+test('absent service and revision minimum annotations mean zero, but maxima remain explicit', () => {
+  for (const verify of [verifyCandidate, verifyPromotion]) {
+    const current = verify === verifyCandidate ? tagged() : promoted(), actual = candidate();
+    delete current.metadata.annotations['run.googleapis.com/minScale'];
+    delete current.spec.template.metadata.annotations['autoscaling.knative.dev/minScale'];
+    delete actual.metadata.annotations['autoscaling.knative.dev/minScale'];
+    verify(current, actual, legacyService(), options);
+  }
+});
 
 test('Stage 3 v1 metadata accepts exact aliases by known project number or ID without mutation', () => {
   for (const annotation of [aliases(), aliases('project-4343c1b3-d768-4b8f-bff'), aliases().split(',').reverse().join(',')]) {

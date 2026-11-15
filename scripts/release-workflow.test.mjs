@@ -7,6 +7,19 @@ import test from 'node:test';
 
 const workflow = readFileSync(new URL('../.github/workflows/deploy-cloud-run.yml', import.meta.url), 'utf8');
 
+test('deployment explicitly sets both scaling levels, startup boost, and the preserved resource envelope', () => {
+  const release = readFileSync(new URL('./release.mjs', import.meta.url), 'utf8');
+  const deploy = release.match(/gcloud\(\['run', 'deploy',[\s\S]*?\]\);/)?.[0];
+  assert(deploy);
+  const flags = [...deploy.matchAll(/'(--[^']+)'/g)].map(match => match[1]);
+  for (const flag of ['--no-traffic', '--cpu=1', '--memory=1Gi', '--min=0', '--max=1',
+    '--min-instances=0', '--max-instances=1', '--cpu-boost', '--cpu-throttling',
+    '--concurrency=40', '--timeout=120', '--port=8080',
+    '--startup-probe=httpGet.path=/api/health/startup,httpGet.port=8080,periodSeconds=5,timeoutSeconds=5,failureThreshold=48']) {
+    assert(flags.includes(flag), `Missing deployment flag: ${flag}`);
+  }
+});
+
 test('PR and main checks are separate, synthetic, and cannot request OIDC', () => {
   assert.match(workflow, /pull_request:\n\s+branches: \[main\]/);
   const checks = workflow.slice(0, workflow.indexOf('\n  deploy:'));
