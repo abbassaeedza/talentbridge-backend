@@ -25,6 +25,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -59,8 +60,8 @@ class AuthServiceTest {
     void coordinatorLoginRequiresSubmittedPassword() {
         when(userRepository.findByEmail(coordinator.getEmail())).thenReturn(Optional.of(coordinator));
         when(passwordEncoder.matches("demo-password", coordinator.getPassword())).thenReturn(true);
-        when(tokenProvider.generateAccessToken(any(), any(), any())).thenReturn("access");
-        when(tokenProvider.generateRefreshToken(any())).thenReturn("refresh");
+        when(tokenProvider.generateAccessToken(any(), any(), any(), anyInt())).thenReturn("access");
+        when(tokenProvider.generateRefreshToken(any(), anyInt())).thenReturn("refresh");
 
         LoginRequest request = new LoginRequest();
         request.setEmail(coordinator.getEmail());

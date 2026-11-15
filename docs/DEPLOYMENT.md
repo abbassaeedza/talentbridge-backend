@@ -153,13 +153,27 @@ Cleanup and reseeding run in one transaction; database failures roll back the tr
 The settings-row lock is acquired before reading the seed version, so a waiting instance sees the completed version and does not repeat a successful reset.
 If the singleton settings row is missing, maintenance is skipped rather than running an unlocked reset.
 Do not test this by starting the application against a production database.
-Use isolated tests and a restored disposable database for deployment rehearsal.
-The optional `DemoDataSeederDatabaseTest` accepts only an explicit loopback PostgreSQL URL in `STAGE_ONE_TEST_DB_URL`, with separate `STAGE_ONE_TEST_DB_USER` and `STAGE_ONE_TEST_DB_PASSWORD` environment values.
-Run `./mvnw -Dtest=DemoDataSeederDatabaseTest test` against a pre-Stage-1 public-schema restore, never a production tunnel.
-It exercises deletion and replacement with real foreign keys, then uses a temporary SQL trigger to reject the final version update through the Spring seeder proxy, without an outer test transaction.
-It verifies every restored public-schema row and the seed marker remain unchanged and removes its trigger and function in `finally`.
-Both database tests roll back their work; the normal offline test suite skips them unless the test URL is supplied.
-This change does not revoke previously issued JWTs; assess existing demo sessions before enabling the new demo coordinator in a shared deployment.
+Use synthetic fixtures in an explicitly named disposable database for deployment rehearsal.
+Run `bash ./mvnw test` for offline unit tests.
+Run `bash ./mvnw -Pdatabase-tests verify` with `TALENTBRIDGE_TEST_DB_URL=jdbc:postgresql://127.0.0.1:PORT/talentbridge_test`, `TALENTBRIDGE_TEST_DB_USER`, and `TALENTBRIDGE_TEST_DB_PASSWORD` for the separate PostgreSQL suite.
+The database guard rejects remote hosts, other database names, query parameters, and the frozen backup restore.
+Flyway applies the current migrations before synthetic legacy fixtures exercise replacement, late-failure rollback, and password-change races.
+The integration suite deliberately resets its disposable data, so never point it at a production tunnel or backup database.
+
+### Token and password security
+
+Access tokens contain `type=access`; refresh tokens contain `type=refresh`.
+Both contain `ver`, which must match the user's stored credential version.
+Deploying this token format invalidates old sessions and requires users to sign in again.
+Missing or invalid authentication returns `401`; authenticated permission failures return `403`.
+Password changes require authentication and the current password, update the password and version atomically, and invalidate every old access and refresh token.
+Exact managed demo accounts cannot change their individual passwords while demo mode is enabled.
+Rotate their shared credential through its configured secret instead.
+Startup checks BCrypt matches before updating a demo password; an unchanged password does not revoke sessions on each cold start.
+The separate database profile exercises deletion and replacement with real foreign keys and a temporary SQL trigger that rejects the final version update through the Spring seeder proxy.
+It verifies rollback of every synthetic application row and removes its temporary trigger and function in `finally`.
+Fixture preparation deliberately resets the named disposable database; the offline unit suite does not run these integration tests.
+Legacy JWTs are rejected by the required type/version claims, and password changes revoke prior versioned tokens.
 Disable demo mode outside an intentionally isolated demo environment: the dedicated demo coordinator is still privileged, despite requiring a password.
 
 ## Initial deployment

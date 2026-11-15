@@ -39,8 +39,7 @@ class JwtAuthenticationFilterTest {
                 .role(UserRole.STUDENT)
                 .status(UserStatus.SUSPENDED)
                 .build();
-        when(tokenProvider.validateToken("token")).thenReturn(true);
-        when(tokenProvider.getUserIdFromToken("token")).thenReturn(userId);
+        when(tokenProvider.parseAccessToken("token")).thenReturn(new JwtTokenProvider.TokenIdentity(userId, 0));
         when(userRepository.findById(userId)).thenReturn(Optional.of(suspended));
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("Authorization", "Bearer token");
@@ -64,8 +63,7 @@ class JwtAuthenticationFilterTest {
                 .role(UserRole.COMPANY)
                 .status(UserStatus.REJECTED)
                 .build();
-        when(tokenProvider.validateToken("token")).thenReturn(true);
-        when(tokenProvider.getUserIdFromToken("token")).thenReturn(userId);
+        when(tokenProvider.parseAccessToken("token")).thenReturn(new JwtTokenProvider.TokenIdentity(userId, 0));
         when(userRepository.findById(userId)).thenReturn(Optional.of(rejected));
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("Authorization", "Bearer token");

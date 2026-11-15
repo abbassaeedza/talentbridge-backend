@@ -242,6 +242,8 @@ class DemoDataSeederTest {
         verify(userRepository, never()).findByEmail(coordinator.getEmail());
         verify(userRepository, never()).deleteAll(any());
         assertEquals("test-only-encoded-value", student.getPassword());
+        assertEquals(1, student.getTokenVersion());
+        assertEquals(0, demoCoordinator.getTokenVersion());
         assertEquals(DemoDataSeeder.DEMO_DATA_VERSION, settings.getDemoDataVersion());
         verifyNoInteractions(projectRepository, partyRepository, applicationRepository, submissionRepository,
                 scorecardRepository, evaluationReportRepository, notificationRepository,

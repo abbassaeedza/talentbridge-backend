@@ -52,7 +52,7 @@ class SecurityConfigIntegrationTest {
         when(availability.getReadinessState()).thenReturn(ReadinessState.ACCEPTING_TRAFFIC);
         mvc.perform(get("/api/health/startup")).andExpect(status().isOk());
 
-        mvc.perform(get("/api/users/students")).andExpect(status().isForbidden());
+        mvc.perform(get("/api/users/students")).andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -66,8 +66,7 @@ class SecurityConfigIntegrationTest {
                 .status(UserStatus.PENDING)
                 .build();
         pending.setId(userId);
-        when(tokenProvider.validateToken("token")).thenReturn(true);
-        when(tokenProvider.getUserIdFromToken("token")).thenReturn(userId);
+        when(tokenProvider.parseAccessToken("token")).thenReturn(new JwtTokenProvider.TokenIdentity(userId, 0));
         when(userRepository.findById(userId)).thenReturn(Optional.of(pending));
         when(userService.getById(userId)).thenReturn(pending);
         when(userService.toResponse(pending)).thenReturn(UserResponse.builder().id(userId).build());

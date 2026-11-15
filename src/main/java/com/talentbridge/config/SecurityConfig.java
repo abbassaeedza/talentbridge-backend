@@ -28,8 +28,14 @@ public class SecurityConfig {
         http.csrf(c -> c.disable())
             .cors(c -> c.configurationSource(corsSource()))
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .exceptionHandling(e -> e.authenticationEntryPoint((request, response, failure) -> {
+                response.setStatus(401);
+                response.setContentType("application/json");
+                response.getWriter().write("{\"message\":\"Authentication required\"}");
+            }))
             .authorizeHttpRequests(a -> a
                 .requestMatchers(HttpMethod.GET, "/api/health/startup").permitAll()
+                .requestMatchers(HttpMethod.PUT, "/api/auth/password").authenticated()
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/project-supervisor-invitations/**").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
