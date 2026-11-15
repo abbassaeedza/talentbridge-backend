@@ -14,6 +14,7 @@ public class User extends BaseEntity {
 
     @Column(nullable = false, unique = true, length = 255) private String email;
     @JsonIgnore @Column(nullable = false)                  private String password;
+    @JsonIgnore @Column(name = "token_version", nullable = false) private int tokenVersion;
     @Column(nullable = false, length = 100)                private String firstName;
     @Column(nullable = false, length = 100)                private String lastName;
     @Enumerated(EnumType.STRING)

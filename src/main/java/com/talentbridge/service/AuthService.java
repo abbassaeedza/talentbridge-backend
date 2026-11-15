@@ -7,6 +7,9 @@ import com.talentbridge.enums.*;
 import com.talentbridge.exception.*;
 import com.talentbridge.repository.*;
 import com.talentbridge.security.JwtTokenProvider;
+import com.talentbridge.config.DemoAccounts;
+import io.jsonwebtoken.JwtException;
+import org.springframework.beans.factory.annotation.Value;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -16,6 +19,7 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class AuthService {
+    @Value("${app.demo-mode:false}") private boolean demoMode;
     private final UserRepository userRepository;
     private final CompanyProfileRepository companyProfileRepository;
     private final ScorecardRepository scorecardRepository;
@@ -81,11 +85,16 @@ public class AuthService {
     }
 
     public AuthResponse refresh(RefreshTokenRequest req) {
-        if (!tokenProvider.validateToken(req.getRefreshToken()))
+        JwtTokenProvider.TokenIdentity identity;
+        try {
+            identity = tokenProvider.parseRefreshToken(req.getRefreshToken());
+        } catch (JwtException | IllegalArgumentException e) {
             throw new BadRequestException("Invalid or expired refresh token");
-        UUID userId = tokenProvider.getUserIdFromToken(req.getRefreshToken());
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("User", userId.toString()));
+        }
+        User user = userRepository.findById(identity.userId())
+                .orElseThrow(() -> new BadRequestException("Invalid or expired refresh token"));
+        if (user.getTokenVersion() != identity.version())
+            throw new BadRequestException("Invalid or expired refresh token");
         if (user.getStatus() == UserStatus.SUSPENDED)
             throw new ForbiddenException("Account suspended");
         return buildAuthResponse(user);
@@ -93,19 +102,22 @@ public class AuthService {
 
     @Transactional
     public void changePassword(UUID userId, ChangePasswordRequest req) {
-        User user = userRepository.findById(userId)
+        User user = userRepository.findByIdForUpdate(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", userId.toString()));
+        if (demoMode && DemoAccounts.EMAILS.contains(user.getEmail()))
+            throw new ForbiddenException("Demo passwords are managed by the operator");
         if (!passwordEncoder.matches(req.getCurrentPassword(), user.getPassword()))
             throw new BadRequestException("Current password is incorrect");
         user.setPassword(passwordEncoder.encode(req.getNewPassword()));
+        user.setTokenVersion(Math.incrementExact(user.getTokenVersion()));
         userRepository.save(user);
     }
 
     private AuthResponse buildAuthResponse(User user) {
         return AuthResponse.builder()
                 .accessToken(tokenProvider.generateAccessToken(
-                        user.getId(), user.getEmail(), user.getRole().name()))
-                .refreshToken(tokenProvider.generateRefreshToken(user.getId()))
+                        user.getId(), user.getEmail(), user.getRole().name(), user.getTokenVersion()))
+                .refreshToken(tokenProvider.generateRefreshToken(user.getId(), user.getTokenVersion()))
                 .user(AuthResponse.UserDto.builder()
                         .id(user.getId()).email(user.getEmail())
                         .firstName(user.getFirstName()).lastName(user.getLastName())

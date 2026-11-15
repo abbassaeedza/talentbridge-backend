@@ -3,28 +3,14 @@ package com.talentbridge.config;
 import com.talentbridge.entity.ApplicationSettings;
 import com.talentbridge.repository.UserRepository;
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.EntityManagerFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Import;
-import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
-import org.springframework.data.jpa.repository.config.EnableJpaAuditing;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.support.SqlArrayValue;
-import org.springframework.orm.jpa.JpaTransactionManager;
-import org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean;
-import org.springframework.orm.jpa.vendor.HibernateJpaVendorAdapter;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
@@ -35,11 +21,11 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-// Opt-in only: a disposable public-schema restore, never the application's configured database.
-@EnabledIfEnvironmentVariable(named = "STAGE_ONE_TEST_DB_URL",
-        matches = "jdbc:postgresql://(?:127\\.0\\.0\\.1|localhost):[0-9]+/[a-zA-Z_][a-zA-Z0-9_]*")
-@SpringJUnitConfig(DemoDataSeederDatabaseTest.DatabaseConfig.class)
-class DemoDataSeederDatabaseTest {
+@SpringJUnitConfig(DatabaseTestConfig.class)
+@org.springframework.test.context.TestPropertySource(properties = {
+        "jwt.secret=synthetic-integration-signing-key-not-a-production-secret",
+        "jwt.expiration-ms=60000", "jwt.refresh-expiration-ms=120000"})
+class DemoDataSeederDatabaseIT {
     @Autowired private DemoDataSeeder seeder;
     @Autowired private UserRepository users;
     @Autowired private DataSource dataSource;
@@ -51,6 +37,7 @@ class DemoDataSeederDatabaseTest {
     @BeforeEach
     void configureIsolatedSeed() {
         jdbc = new JdbcTemplate(dataSource);
+        LegacyDemoFixtures.reset(jdbc);
         ReflectionTestUtils.setField(seeder, "demoPassword", UUID.randomUUID().toString());
         ReflectionTestUtils.setField(seeder, "resetDemoData", true);
         Integer version = jdbc.queryForObject("select demo_data_version from application_settings where id = 1", Integer.class);
@@ -133,41 +120,4 @@ class DemoDataSeederDatabaseTest {
         return false;
     }
 
-    @Configuration(proxyBeanMethods = false)
-    @EnableTransactionManagement
-    @EnableJpaAuditing
-    @EnableJpaRepositories(basePackageClasses = UserRepository.class)
-    @Import(DemoDataSeeder.class)
-    static class DatabaseConfig {
-        @Bean
-        DataSource dataSource() {
-            String url = System.getenv("STAGE_ONE_TEST_DB_URL");
-            if (url == null || !url.matches("jdbc:postgresql://(?:127\\.0\\.0\\.1|localhost):[0-9]+/[a-zA-Z_][a-zA-Z0-9_]*")) {
-                throw new IllegalArgumentException("Database rehearsal requires an explicit loopback-only disposable database URL");
-            }
-            return new DriverManagerDataSource(url, System.getenv("STAGE_ONE_TEST_DB_USER"),
-                    System.getenv("STAGE_ONE_TEST_DB_PASSWORD"));
-        }
-
-        @Bean
-        LocalContainerEntityManagerFactoryBean entityManagerFactory(DataSource dataSource) {
-            var factory = new LocalContainerEntityManagerFactoryBean();
-            factory.setDataSource(dataSource);
-            factory.setPackagesToScan(ApplicationSettings.class.getPackageName());
-            factory.setJpaVendorAdapter(new HibernateJpaVendorAdapter());
-            factory.setJpaPropertyMap(Map.of("hibernate.hbm2ddl.auto", "none",
-                    "hibernate.physical_naming_strategy", "org.hibernate.boot.model.naming.CamelCaseToUnderscoresNamingStrategy"));
-            return factory;
-        }
-
-        @Bean
-        PlatformTransactionManager transactionManager(EntityManagerFactory entityManagerFactory) {
-            return new JpaTransactionManager(entityManagerFactory);
-        }
-
-        @Bean
-        PasswordEncoder passwordEncoder() {
-            return new BCryptPasswordEncoder(4);
-        }
-    }
 }

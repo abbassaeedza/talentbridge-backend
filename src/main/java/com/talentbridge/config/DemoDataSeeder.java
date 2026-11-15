@@ -57,8 +57,8 @@ import java.util.stream.Stream;
 @Slf4j
 public class DemoDataSeeder {
 
-    static final String MARKER_EMAIL = "avery.quinn@example.test";
-    static final String DEMO_COORDINATOR_EMAIL = "rowan.hale@example.test";
+    static final String MARKER_EMAIL = DemoAccounts.COMPANY_EMAIL;
+    static final String DEMO_COORDINATOR_EMAIL = DemoAccounts.COORDINATOR_EMAIL;
     static final int DEMO_DATA_VERSION = 6;
     private static final java.util.Map<String, Set<String>> DEMO_NOTIFICATIONS = java.util.Map.of(
             "Demo data ready", Set.of("Representative demo records are available."),
@@ -79,15 +79,7 @@ public class DemoDataSeeder {
             "gibran.student@talentbridge.com", "hana.student@talentbridge.com", "imran.student@talentbridge.com",
             "javed.student@talentbridge.com", "pending.student@talentbridge.com",
             "rejected.student@talentbridge.com", "suspended.student@talentbridge.com");
-    static final List<String> DEMO_USER_EMAILS = List.of(
-            DEMO_COORDINATOR_EMAIL, MARKER_EMAIL, "ellis.wren@example.test", "hazel.reed@example.test",
-            "cedar.lane@example.test", "sylvie.moss@example.test", "leona.briar@example.test",
-            "tessa.grove@example.test", "orion.finch@example.test", "lyra.brook@example.test",
-            "mira.shah@example.test", "felix.arden@example.test", "nora.ellis@example.test",
-            "theo.marlow@example.test", "iris.vale@example.test", "jasper.willow@example.test",
-            "elara.stone@example.test", "soren.ash@example.test", "freya.bell@example.test",
-            "milo.hart@example.test", "ada.blair@example.test", "evan.rose@example.test",
-            "lena.frost@example.test");
+    static final List<String> DEMO_USER_EMAILS = DemoAccounts.EMAILS;
 
     @Value("${app.seed.demo-password:}")
     private String demoPassword;
@@ -134,6 +126,7 @@ public class DemoDataSeeder {
                     .filter(user -> !passwordEncoder.matches(demoPassword, user.getPassword()))
                     .forEach(user -> {
                         user.setPassword(passwordEncoder.encode(demoPassword));
+                        user.setTokenVersion(Math.incrementExact(user.getTokenVersion()));
                         userRepository.save(user);
                     });
             return;

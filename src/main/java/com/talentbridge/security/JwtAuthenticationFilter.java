@@ -1,6 +1,7 @@
 package com.talentbridge.security;
 import com.talentbridge.enums.UserStatus;
 import com.talentbridge.repository.UserRepository;
+import io.jsonwebtoken.JwtException;
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
 import lombok.RequiredArgsConstructor;
@@ -13,7 +14,6 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.util.List;
-import java.util.UUID;
 
 @Component @RequiredArgsConstructor @Slf4j
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
@@ -25,21 +25,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         try {
             String token = extractToken(req);
-            if (StringUtils.hasText(token) && tokenProvider.validateToken(token)) {
-                UUID userId = tokenProvider.getUserIdFromToken(token);
-                userRepository.findById(userId)
-                        .filter(user -> user.getStatus() != UserStatus.SUSPENDED)
+            if (StringUtils.hasText(token)) {
+                var identity = tokenProvider.parseAccessToken(token);
+                userRepository.findById(identity.userId())
+                        .filter(user -> user.getStatus() != UserStatus.SUSPENDED
+                                && user.getTokenVersion() == identity.version())
                         .ifPresent(user -> {
                             List<SimpleGrantedAuthority> authorities = user.getStatus() == UserStatus.APPROVED
                                     ? List.of(
                                             new SimpleGrantedAuthority("ROLE_" + user.getRole().name()),
                                             new SimpleGrantedAuthority("APPROVED_USER"))
                                     : List.of(new SimpleGrantedAuthority("ACCOUNT_REVIEW"));
-                            var auth = new UsernamePasswordAuthenticationToken(userId, null,
+                            var auth = new UsernamePasswordAuthenticationToken(identity.userId(), null,
                                     authorities);
                             SecurityContextHolder.getContext().setAuthentication(auth);
                         });
             }
+        } catch (JwtException | IllegalArgumentException e) {
+            log.debug("Rejected invalid authentication token");
         } catch (Exception e) { log.error("Auth error", e); }
         chain.doFilter(req, res);
     }

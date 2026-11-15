@@ -100,8 +100,8 @@ public class ProjectSupervisorInvitationService {
                 .linkedinUrl(request.getLinkedinUrl()).build());
         invitation.setStatus(ProjectSupervisorInvitationStatus.ACCEPTED);
         invitation.setAcceptedAt(LocalDateTime.now());
-        return AuthResponse.builder().accessToken(tokenProvider.generateAccessToken(user.getId(), user.getEmail(), user.getRole().name()))
-                .refreshToken(tokenProvider.generateRefreshToken(user.getId()))
+        return AuthResponse.builder().accessToken(tokenProvider.generateAccessToken(user.getId(), user.getEmail(), user.getRole().name(), user.getTokenVersion()))
+                .refreshToken(tokenProvider.generateRefreshToken(user.getId(), user.getTokenVersion()))
                 .user(AuthResponse.UserDto.builder().id(user.getId()).email(user.getEmail()).firstName(user.getFirstName())
                         .lastName(user.getLastName()).role(user.getRole()).status(user.getStatus()).onboardingComplete(true)
                         .supervisorProfile(SupervisorProfileResponse.builder().id(profile.getId()).jobTitle(profile.getJobTitle())

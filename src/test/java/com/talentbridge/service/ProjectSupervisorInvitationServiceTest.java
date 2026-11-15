@@ -135,8 +135,8 @@ class ProjectSupervisorInvitationServiceTest {
         when(passwordEncoder.encode("password123")).thenReturn("hash");
         when(userRepository.save(any(User.class))).thenAnswer(i -> { User user = i.getArgument(0); user.setId(UUID.randomUUID()); return user; });
         when(supervisorProfileRepository.save(any(SupervisorProfile.class))).thenAnswer(i -> { SupervisorProfile profile = i.getArgument(0); profile.setId(UUID.randomUUID()); return profile; });
-        when(tokenProvider.generateAccessToken(any(), any(), any())).thenReturn("access");
-        when(tokenProvider.generateRefreshToken(any())).thenReturn("refresh");
+        when(tokenProvider.generateAccessToken(any(), any(), any(), org.mockito.ArgumentMatchers.anyInt())).thenReturn("access");
+        when(tokenProvider.generateRefreshToken(any(), org.mockito.ArgumentMatchers.anyInt())).thenReturn("refresh");
 
         var response = service.accept(token, request);
 

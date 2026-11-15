@@ -262,7 +262,7 @@ public class UserService {
                 || accessToken == null || accessToken.isBlank()) {
             throw new BadRequestException("A verified GitHub account is required");
         }
-        User user = getById(userId);
+        User user = getByIdForUpdate(userId);
         user.setGithubUsername(githubUsername.trim());
         user.setGithubAccessToken(accessToken);
         return userRepository.save(user);
