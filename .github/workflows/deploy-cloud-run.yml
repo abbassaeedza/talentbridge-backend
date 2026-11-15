@@ -1,13 +1,14 @@
 name: Deploy to Cloud Run
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   PROJECT_ID: project-4343c1b3-d768-4b8f-bff
@@ -16,39 +17,107 @@ env:
   SERVICE: talentbridge-backend
 
 jobs:
-  deploy:
+  unit:
+    name: Backend unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: node --test scripts/*.test.mjs
+      - run: bash ./mvnw -B test
 
+  postgres:
+    name: Backend PostgreSQL tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: talentbridge_test
+          POSTGRES_USER: talentbridge_test
+          POSTGRES_PASSWORD: synthetic-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U talentbridge_test -d talentbridge_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      TALENTBRIDGE_TEST_DB_URL: jdbc:postgresql://127.0.0.1:5432/talentbridge_test
+      TALENTBRIDGE_TEST_DB_USER: talentbridge_test
+      TALENTBRIDGE_TEST_DB_PASSWORD: synthetic-ci-only
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - run: bash ./mvnw -B -Pdatabase-tests verify
+
+  deploy:
+    name: Deploy production
+    needs: [unit, postgres]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: talentbridge-backend-production
+      cancel-in-progress: false
+    steps:
+      - name: Skip superseded source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha 2>/dev/null) || { echo MAIN_LOOKUP_FAILED; exit 1; }
+          [[ "$current" =~ ^[0-9a-f]{40}$ ]] || { echo MAIN_SHA_INVALID; exit 1; }
+          if [[ "$current" == "$GITHUB_SHA" ]]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            echo SUPERSEDED_SOURCE_SKIPPED
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.source.outputs.current == 'true'
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        if: steps.source.outputs.current == 'true'
+        with:
+          node-version: '24'
       - uses: google-github-actions/auth@v3
+        if: steps.source.outputs.current == 'true'
         with:
           project_id: ${{ env.PROJECT_ID }}
           workload_identity_provider: projects/1089736501943/locations/global/workloadIdentityPools/github/providers/talentbridge-backend
           service_account: github-cloud-run@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com
 
       - uses: google-github-actions/setup-gcloud@v3
-
-      - name: Build and push image
-        run: |
-          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
-          docker build --tag "$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$SERVICE:$GITHUB_SHA" .
-          docker push "$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$SERVICE:$GITHUB_SHA"
-
-      - uses: google-github-actions/deploy-cloudrun@v3
-        with:
-          project_id: ${{ env.PROJECT_ID }}
-          service: talentbridge-backend
-          region: asia-south1
-          image: asia-south1-docker.pkg.dev/project-4343c1b3-d768-4b8f-bff/talentbridge/talentbridge-backend:${{ github.sha }}
-          flags: >-
-            --service-account=talentbridge-runtime@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com
-            --memory=1Gi
-            --cpu=1
-            --min=0
-            --max=1
-            --concurrency=40
-            --timeout=120
-            --port=8080
-            --startup-probe=httpGet.path=/api/health/startup,httpGet.port=8080,periodSeconds=5,timeoutSeconds=5,failureThreshold=48
-            --cpu-throttling
+        if: steps.source.outputs.current == 'true'
+      - uses: docker/setup-buildx-action@v3
+        if: steps.source.outputs.current == 'true'
+      - name: Build, verify candidate, and promote exact revision
+        if: steps.source.outputs.current == 'true'
+        run: node scripts/release.mjs
