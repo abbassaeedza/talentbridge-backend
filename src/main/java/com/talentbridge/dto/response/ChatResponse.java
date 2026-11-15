@@ -5,5 +5,6 @@ import java.util.Map;
 public class ChatResponse {
     private String message;
     private String model;
+    private String source;
     private Map<String, Object> projectDraft;
 }

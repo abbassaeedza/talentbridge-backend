@@ -14,10 +14,18 @@ class ChatRequestValidationTest {
     private final Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
 
     @Test
-    void acceptsALongAssistantReplyReplayedAsHistory() {
+    void rejectsOversizedUntrustedHistory() {
         ChatRequest request = request("what are the deliverables", "assistant", "x".repeat(6000));
 
+        assertEquals(1, validator.validate(request).size());
+    }
+
+    @Test
+    void acceptsBoundedHistoryAndRejectsSystemRoles() {
+        ChatRequest request = request("help", "assistant", "x".repeat(2000));
         assertTrue(validator.validate(request).isEmpty());
+        request.getHistory().get(0).setRole("system");
+        assertEquals(1, validator.validate(request).size());
     }
 
     @Test
