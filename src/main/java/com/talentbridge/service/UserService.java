@@ -1,6 +1,7 @@
 package com.talentbridge.service;
 
 import com.talentbridge.dto.request.StudentOnboardingRequest;
+import com.talentbridge.dto.request.UpdateProfileRequest;
 import com.talentbridge.dto.request.SupervisorOnboardingRequest;
 import com.talentbridge.dto.request.NotificationPreferenceRequest;
 import com.talentbridge.dto.response.PageResponse;
@@ -24,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Arrays;
 import java.util.UUID;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -43,6 +45,55 @@ public class UserService {
     public User getById(UUID id) {
         return userRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("User", id.toString()));
+    }
+
+    @Transactional(readOnly = true)
+    public UserResponse getMe(UUID userId) {
+        return toResponse(getById(userId));
+    }
+
+    @Transactional
+    public UserResponse updateProfile(UUID userId, UpdateProfileRequest req) {
+        User user = getByIdForUpdate(userId);
+        if (user.getStatus() != UserStatus.APPROVED)
+            throw new ForbiddenException("Only approved users can edit their profile");
+        Set<String> roleFields = switch (user.getRole()) {
+            case STUDENT -> Set.of("university", "major", "yearOfStudy", "bio", "linkedinUrl", "portfolioUrl",
+                    "pastExperience", "skills", "gpa", "age");
+            case COMPANY -> Set.of("companyName", "industry", "description", "website", "city", "country");
+            case COORDINATOR -> Set.of();
+            default -> throw new ForbiddenException("Supervisor profile editing is not supported");
+        };
+        Set<String> common = Set.of("firstName", "lastName", "phoneNumber");
+        if (req.fields().stream().anyMatch(field -> !common.contains(field) && !roleFields.contains(field)))
+            throw new BadRequestException("Profile field is not editable for this role");
+        if (user.getRole() == UserRole.STUDENT) {
+            StudentProfile profile = user.getStudentProfile();
+            if (profile == null) throw new BadRequestException("Complete student onboarding before editing your profile");
+            if (req.has("age")) profile.setAge(req.getAge());
+            if (req.has("university")) profile.setUniversity(req.getUniversity());
+            if (req.has("major")) profile.setMajor(req.getMajor());
+            if (req.has("yearOfStudy")) profile.setYearOfStudy(req.getYearOfStudy());
+            if (req.has("bio")) profile.setBio(req.getBio());
+            if (req.has("linkedinUrl")) profile.setLinkedinUrl(req.getLinkedinUrl());
+            if (req.has("portfolioUrl")) profile.setPortfolioUrl(req.getPortfolioUrl());
+            if (req.has("pastExperience")) profile.setPastExperience(req.getPastExperience());
+            if (req.has("skills")) profile.setSkills(req.getSkills() == null ? List.of() : req.getSkills());
+            if (req.has("gpa")) profile.setGpa(req.getGpa());
+        } else if (user.getRole() == UserRole.COMPANY) {
+            CompanyProfile profile = user.getCompanyProfile();
+            if (profile == null) throw new BadRequestException("Company profile is missing");
+            if (req.has("companyName")) profile.setCompanyName(req.getCompanyName());
+            if (req.has("industry")) profile.setIndustry(req.getIndustry());
+            if (req.has("description")) profile.setDescription(req.getDescription());
+            if (req.has("website")) profile.setWebsite(req.getWebsite());
+            if (req.has("city")) profile.setCity(req.getCity());
+            if (req.has("country")) profile.setCountry(req.getCountry());
+        }
+        if (req.has("firstName")) user.setFirstName(req.getFirstName());
+        if (req.has("lastName")) user.setLastName(req.getLastName());
+        if (req.has("phoneNumber")) user.setPhoneNumber(req.getPhoneNumber());
+        return toResponse(user);
     }
 
     public List<NotificationPreferenceResponse> getNotificationPreferences(UUID userId) {
@@ -88,10 +139,12 @@ public class UserService {
     }
 
     @Transactional
-    public StudentProfile completeOnboarding(UUID userId, StudentOnboardingRequest req) {
-        User user = getById(userId);
-        StudentProfile profile = studentProfileRepository.findByUserId(userId)
-                .orElse(StudentProfile.builder().user(user).build());
+    public UserResponse.StudentProfileDto completeOnboarding(UUID userId, StudentOnboardingRequest req) {
+        User user = getByIdForUpdate(userId);
+        requireOnboarding(user, UserRole.STUDENT);
+        if (studentProfileRepository.findByUserId(userId).isPresent())
+            throw new BadRequestException("Student onboarding is already complete");
+        StudentProfile profile = StudentProfile.builder().user(user).build();
         profile.setAge(req.getAge());
         profile.setUniversity(req.getUniversity());
         profile.setYearOfStudy(req.getYearOfStudy());
@@ -102,31 +155,40 @@ public class UserService {
         profile.setLinkedinUrl(req.getLinkedinUrl());
         profile.setPortfolioUrl(req.getPortfolioUrl());
         profile.setGpa(req.getGpa());
-        return studentProfileRepository.save(profile);
+        user.setStudentProfile(studentProfileRepository.save(profile));
+        return toResponse(user).getStudentProfile();
     }
 
     @Transactional
-    public SupervisorProfile completeSupervisorOnboarding(UUID userId, SupervisorOnboardingRequest req) {
-        User user = getById(userId);
-        if (user.getRole() != UserRole.PARTY_SUPERVISOR) throw new ForbiddenException("Only party supervisors can complete this onboarding");
-        SupervisorProfile profile = supervisorProfileRepository.findByUserId(userId)
-                .orElse(SupervisorProfile.builder().user(user).build());
+    public SupervisorProfileResponse completeSupervisorOnboarding(UUID userId, SupervisorOnboardingRequest req) {
+        User user = getByIdForUpdate(userId);
+        requireOnboarding(user, UserRole.PARTY_SUPERVISOR);
+        if (supervisorProfileRepository.findByUserId(userId).isPresent())
+            throw new BadRequestException("Supervisor onboarding is already complete");
+        SupervisorProfile profile = SupervisorProfile.builder().user(user).build();
         profile.setJobTitle(req.getJobTitle());
         profile.setDepartment(req.getDepartment());
         profile.setBio(req.getBio());
         profile.setLinkedinUrl(req.getLinkedinUrl());
-        return supervisorProfileRepository.save(profile);
+        user.setSupervisorProfile(supervisorProfileRepository.save(profile));
+        return toResponse(user).getSupervisorProfile();
+    }
+
+    private void requireOnboarding(User user, UserRole role) {
+        if (user.getStatus() != UserStatus.APPROVED || user.getRole() != role)
+            throw new ForbiddenException("Only approved users with the matching role can complete onboarding");
     }
 
     @Transactional
-    public SupervisorProfile uploadSupervisorProfilePhoto(UUID userId, MultipartFile file) {
+    public SupervisorProfileResponse uploadSupervisorProfilePhoto(UUID userId, MultipartFile file) {
         User user = getById(userId);
-        if (user.getRole() != UserRole.PARTY_SUPERVISOR && user.getRole() != UserRole.PROJECT_SUPERVISOR)
-            throw new ForbiddenException("Only supervisors can upload a profile photo");
+        if (user.getStatus() != UserStatus.APPROVED
+                || (user.getRole() != UserRole.PARTY_SUPERVISOR && user.getRole() != UserRole.PROJECT_SUPERVISOR))
+            throw new ForbiddenException("Only approved supervisors can upload a profile photo");
         SupervisorProfile profile = supervisorProfileRepository.findByUserId(userId)
                 .orElseThrow(() -> new BadRequestException("Complete supervisor onboarding before uploading a profile photo"));
         profile.setProfilePhotoUrl(fileStorageService.upload(file, "supervisor-profiles/" + userId));
-        return supervisorProfileRepository.save(profile);
+        return toSupervisorResponse(supervisorProfileRepository.save(profile));
     }
 
     @Transactional
@@ -309,10 +371,14 @@ public class UserService {
                         .country(company.getCountry())
                         .city(company.getCity())
                         .build())
-                .supervisorProfile(supervisor == null ? null : SupervisorProfileResponse.builder()
-                        .id(supervisor.getId()).jobTitle(supervisor.getJobTitle()).department(supervisor.getDepartment())
-                        .bio(supervisor.getBio()).linkedinUrl(supervisor.getLinkedinUrl()).profilePhotoUrl(supervisor.getProfilePhotoUrl()).build())
+                .supervisorProfile(toSupervisorResponse(supervisor))
                 .build();
+    }
+
+    private SupervisorProfileResponse toSupervisorResponse(SupervisorProfile profile) {
+        return profile == null ? null : SupervisorProfileResponse.builder()
+                .id(profile.getId()).jobTitle(profile.getJobTitle()).department(profile.getDepartment())
+                .bio(profile.getBio()).linkedinUrl(profile.getLinkedinUrl()).profilePhotoUrl(profile.getProfilePhotoUrl()).build();
     }
 
     private UserResponse toCoordinatorResponse(User user) {

@@ -58,15 +58,15 @@ class ProjectSupervisorInvitationServiceTest {
     }
 
     @Test
-    void expiresAnExpiredInvitationDuringValidation() {
+    void reportsAnExpiredInvitationWithoutMutatingIt() {
         String token = "expired-token";
         ProjectSupervisorInvitation invitation = invitation(company(UUID.randomUUID(), UUID.randomUUID()), "mentor@example.com", token,
                 ProjectSupervisorInvitationStatus.PENDING, LocalDateTime.now().minusSeconds(1));
         when(invitationRepository.findByTokenHash(hash(token))).thenReturn(Optional.of(invitation));
 
-        assertThrows(BadRequestException.class, () -> service.validate(token));
-
-        assertEquals(ProjectSupervisorInvitationStatus.EXPIRED, invitation.getStatus());
+        assertEquals(ProjectSupervisorInvitationStatus.EXPIRED, service.validate(token).getStatus());
+        assertEquals(ProjectSupervisorInvitationStatus.PENDING, invitation.getStatus());
+        verify(invitationRepository, never()).save(any());
     }
 
     @Test

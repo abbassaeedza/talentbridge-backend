@@ -58,7 +58,7 @@ class AuthTokenBoundaryTest {
         when(users.findByIdForUpdate(user.getId())).thenReturn(Optional.of(user));
         when(users.save(any(User.class))).thenAnswer(call -> call.getArgument(0));
         when(userService.getById(user.getId())).thenReturn(user);
-        when(userService.toResponse(user)).thenReturn(UserResponse.builder().id(user.getId()).build());
+        when(userService.getMe(user.getId())).thenReturn(UserResponse.builder().id(user.getId()).build());
     }
 
     JsonNode login() throws Exception {

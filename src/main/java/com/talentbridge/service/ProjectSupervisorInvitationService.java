@@ -66,11 +66,13 @@ public class ProjectSupervisorInvitationService {
         invitation.setStatus(ProjectSupervisorInvitationStatus.REVOKED);
     }
 
+    @Transactional(readOnly = true)
     public List<ProjectSupervisorInvitationResponse> list(UUID companyUserId) {
         CompanyProfile company = company(companyUserId);
         return invitationRepository.findByCompanyIdOrderByCreatedAtDesc(company.getId()).stream().map(this::toResponse).toList();
     }
 
+    @Transactional(readOnly = true)
     public List<UserResponse> listAcceptedSupervisors(UUID companyUserId, UserService userService) {
         CompanyProfile company = company(companyUserId);
         return supervisorProfileRepository.findByCompanyId(company.getId()).stream()
@@ -79,11 +81,10 @@ public class ProjectSupervisorInvitationService {
                 .map(userService::toResponse).toList();
     }
 
-    @Transactional
+    @Transactional(readOnly = true)
     public ProjectSupervisorInvitationResponse validate(String token) {
         ProjectSupervisorInvitation invitation = invitationRepository.findByTokenHash(hash(token))
                 .orElseThrow(() -> new BadRequestException("Invitation is invalid"));
-        verifyValid(invitation);
         return toResponse(invitation);
     }
 
@@ -129,12 +130,17 @@ public class ProjectSupervisorInvitationService {
     private void verifyValid(ProjectSupervisorInvitation invitation) {
         if (invitation.getStatus() != ProjectSupervisorInvitationStatus.PENDING) throw new BadRequestException("Invitation is no longer available");
         if (!invitation.getExpiresAt().isAfter(LocalDateTime.now())) {
-            invitation.setStatus(ProjectSupervisorInvitationStatus.EXPIRED);
             throw new BadRequestException("Invitation has expired");
         }
     }
     private CompanyProfile company(UUID userId) { return companyProfileRepository.findByUserId(userId).orElseThrow(() -> new ForbiddenException("A company account is required")); }
-    private ProjectSupervisorInvitationResponse toResponse(ProjectSupervisorInvitation invitation) { return ProjectSupervisorInvitationResponse.builder().id(invitation.getId()).email(invitation.getEmail()).companyName(invitation.getCompany().getCompanyName()).status(invitation.getStatus()).expiresAt(invitation.getExpiresAt()).build(); }
+    private ProjectSupervisorInvitationResponse toResponse(ProjectSupervisorInvitation invitation) {
+        ProjectSupervisorInvitationStatus status = invitation.getStatus();
+        if (status == ProjectSupervisorInvitationStatus.PENDING && !invitation.getExpiresAt().isAfter(LocalDateTime.now()))
+            status = ProjectSupervisorInvitationStatus.EXPIRED;
+        return ProjectSupervisorInvitationResponse.builder().id(invitation.getId()).email(invitation.getEmail())
+                .companyName(invitation.getCompany().getCompanyName()).status(status).expiresAt(invitation.getExpiresAt()).build();
+    }
     private String normalize(String value) { return value.trim().toLowerCase(Locale.ROOT); }
     private String token() { byte[] bytes = new byte[32]; new SecureRandom().nextBytes(bytes); return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes); }
     private String hash(String value) { try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); } catch (Exception e) { throw new IllegalStateException(e); } }

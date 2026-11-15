@@ -1,10 +1,12 @@
 package com.talentbridge.controller;
 
 import com.talentbridge.dto.request.StudentOnboardingRequest;
+import com.talentbridge.dto.request.UpdateProfileRequest;
 import com.talentbridge.dto.request.SupervisorOnboardingRequest;
 import com.talentbridge.dto.response.PageResponse;
 import com.talentbridge.dto.response.ScorecardResponse;
 import com.talentbridge.dto.response.UserResponse;
+import com.talentbridge.dto.response.SupervisorProfileResponse;
 import com.talentbridge.entity.*;
 import com.talentbridge.enums.UserRole;
 import com.talentbridge.enums.NotificationType;
@@ -35,7 +37,13 @@ public class UserController {
 
     @GetMapping("/me")
     public UserResponse getMe(@AuthenticationPrincipal UUID userId) {
-        return userService.toResponse(userService.getById(userId));
+        return userService.getMe(userId);
+    }
+
+    @PutMapping("/me/profile")
+    public UserResponse updateProfile(@AuthenticationPrincipal UUID userId,
+                                      @Valid @RequestBody UpdateProfileRequest req) {
+        return userService.updateProfile(userId, req);
     }
 
     @GetMapping("/notification-preferences")
@@ -54,22 +62,22 @@ public class UserController {
 
     @PostMapping("/onboarding")
     @PreAuthorize("hasRole('STUDENT')")
-    public StudentProfile completeOnboarding(
+    public UserResponse.StudentProfileDto completeOnboarding(
             @AuthenticationPrincipal UUID userId,
-            @RequestBody StudentOnboardingRequest req) {
+            @Valid @RequestBody StudentOnboardingRequest req) {
         return userService.completeOnboarding(userId, req);
     }
 
     @PostMapping("/supervisor-onboarding")
     @PreAuthorize("hasRole('PARTY_SUPERVISOR')")
-    public SupervisorProfile completeSupervisorOnboarding(@AuthenticationPrincipal UUID userId,
+    public SupervisorProfileResponse completeSupervisorOnboarding(@AuthenticationPrincipal UUID userId,
             @Valid @RequestBody SupervisorOnboardingRequest req) {
         return userService.completeSupervisorOnboarding(userId, req);
     }
 
     @PostMapping("/supervisor-profile-photo")
     @PreAuthorize("hasAnyRole('PARTY_SUPERVISOR','PROJECT_SUPERVISOR')")
-    public SupervisorProfile uploadSupervisorProfilePhoto(@AuthenticationPrincipal UUID userId,
+    public SupervisorProfileResponse uploadSupervisorProfilePhoto(@AuthenticationPrincipal UUID userId,
                                                            @RequestParam MultipartFile file) {
         return userService.uploadSupervisorProfilePhoto(userId, file);
     }
