@@ -50,4 +50,5 @@ jobs:
             --concurrency=40
             --timeout=120
             --port=8080
+            --startup-probe=httpGet.path=/api/health/startup,httpGet.port=8080,periodSeconds=5,timeoutSeconds=5,failureThreshold=48
             --cpu-throttling

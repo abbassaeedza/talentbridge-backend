@@ -34,7 +34,9 @@ public class DataSeeder implements ApplicationRunner {
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
+        log.info("Startup fixture maintenance: demo mode {}", demoMode ? "enabled" : "disabled");
         seed();
+        log.info("Startup fixture maintenance completed.");
     }
 
     public void seed() {

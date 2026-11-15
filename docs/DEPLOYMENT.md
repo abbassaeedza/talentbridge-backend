@@ -261,3 +261,10 @@ Confirm that the Supabase URL and secret key belong to the same project.
 
 Cloud Run starts a new instance after the service scales to zero.
 Later requests remain fast while the instance stays active.
+
+### Startup finishes before fixture maintenance
+
+Use the HTTP startup probe at `/api/health/startup`, not a TCP-only probe.
+The endpoint returns `503` until Spring startup runners and their transactions finish, then returns `200` without exposing application data.
+The deployment workflow allows up to 240 seconds for this initialization while keeping zero minimum instances and request-based CPU allocation.
+Check the fixture-maintenance completion log and the database seed-version marker before treating a reset as successful.

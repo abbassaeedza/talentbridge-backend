@@ -1,6 +1,7 @@
 package com.talentbridge.config;
 
 import com.talentbridge.controller.UserController;
+import com.talentbridge.controller.StartupController;
 import com.talentbridge.dto.response.UserResponse;
 import com.talentbridge.entity.User;
 import com.talentbridge.enums.UserRole;
@@ -16,6 +17,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.availability.ApplicationAvailability;
+import org.springframework.boot.availability.ReadinessState;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -27,7 +30,7 @@ import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(UserController.class)
+@WebMvcTest({UserController.class, StartupController.class})
 @Import({SecurityConfig.class, JwtAuthenticationFilter.class})
 @TestPropertySource(properties = "app.frontend-url=http://localhost:3000")
 class SecurityConfigIntegrationTest {
@@ -39,6 +42,18 @@ class SecurityConfigIntegrationTest {
     @MockBean private NotificationService notificationService;
     @MockBean private ScorecardService scorecardService;
     @MockBean private GitHubService gitHubService;
+    @MockBean private ApplicationAvailability availability;
+
+    @Test
+    void startupProbeIsAnonymousButUnavailableUntilRunnersComplete() throws Exception {
+        when(availability.getReadinessState()).thenReturn(ReadinessState.REFUSING_TRAFFIC);
+        mvc.perform(get("/api/health/startup")).andExpect(status().isServiceUnavailable());
+
+        when(availability.getReadinessState()).thenReturn(ReadinessState.ACCEPTING_TRAFFIC);
+        mvc.perform(get("/api/health/startup")).andExpect(status().isOk());
+
+        mvc.perform(get("/api/users/students")).andExpect(status().isForbidden());
+    }
 
     @Test
     void letsPendingUsersReadTheirStatusButBlocksApplicationData() throws Exception {

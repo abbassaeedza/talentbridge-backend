@@ -29,6 +29,7 @@ public class SecurityConfig {
             .cors(c -> c.configurationSource(corsSource()))
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(a -> a
+                .requestMatchers(HttpMethod.GET, "/api/health/startup").permitAll()
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/project-supervisor-invitations/**").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
