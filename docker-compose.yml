@@ -44,7 +44,6 @@ services:
 #      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
 #      GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-http://localhost:3000/github/callback}
 #      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
-#      USE_LOCAL_STORAGE: "true"
 #      LOCAL_STORAGE_PATH: /app/uploads
 #    volumes:
 #      - uploads_data:/app/uploads

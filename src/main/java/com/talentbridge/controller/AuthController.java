@@ -1,6 +1,7 @@
 package com.talentbridge.controller;
 import com.talentbridge.dto.request.*;
 import com.talentbridge.dto.response.AuthResponse;
+import com.talentbridge.dto.response.AuthConfigResponse;
 import com.talentbridge.service.AuthService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +14,15 @@ import java.util.UUID;
 public class AuthController {
     private final AuthService authService;
 
+    @GetMapping("/config")
+    public ResponseEntity<AuthConfigResponse> config() {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new AuthConfigResponse(authService.isDemoMode()));
+    }
+    @PostMapping("/demo-login")
+    public AuthResponse demoLogin() {
+        return authService.demoLogin();
+    }
     @PostMapping("/register")
     public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest req) {
         return ResponseEntity.status(HttpStatus.CREATED).body(authService.register(req));
