@@ -11,15 +11,19 @@ import com.talentbridge.config.DemoAccounts;
 import io.jsonwebtoken.JwtException;
 import org.springframework.beans.factory.annotation.Value;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
 public class AuthService {
     @Value("${app.demo-mode:false}") private boolean demoMode;
+    @Value("${app.seed.demo-password:}") private String demoPassword;
+    @Value("${app.seed.coordinator-email:coordinator@talentbridge.com}") private String coordinatorEmail;
     private final UserRepository userRepository;
     private final CompanyProfileRepository companyProfileRepository;
     private final ScorecardRepository scorecardRepository;
@@ -81,6 +85,26 @@ public class AuthService {
             throw new ForbiddenException("Account suspended");
 
         // PENDING and REJECTED now get a token so the frontend can redirect properly
+        return buildAuthResponse(user);
+    }
+
+    public boolean isDemoMode() {
+        return demoMode;
+    }
+
+    public AuthResponse demoLogin() {
+        if (!isDemoMode())
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Not found");
+        if (demoPassword == null || demoPassword.isBlank()
+                || (coordinatorEmail != null && DemoAccounts.COORDINATOR_EMAIL.equalsIgnoreCase(coordinatorEmail.trim())))
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Demo login unavailable");
+
+        User user = userRepository.findByEmail(DemoAccounts.COORDINATOR_EMAIL)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Demo login unavailable"));
+        if (user.getRole() != UserRole.COORDINATOR || user.getStatus() != UserStatus.APPROVED)
+            throw new ForbiddenException("Demo login unavailable");
+        if (!passwordEncoder.matches(demoPassword, user.getPassword()))
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Demo login unavailable");
         return buildAuthResponse(user);
     }
 

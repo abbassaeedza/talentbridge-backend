@@ -28,6 +28,7 @@ public class GitHubService {
     @Value("${github.api-url}") private String apiUrl;
     @Value("${github.oauth.client-id}") private String clientId;
     @Value("${github.oauth.client-secret}") private String clientSecret;
+    @Value("${github.oauth.redirect-uri}") private String redirectUri;
 
     private final ObjectMapper mapper;
     private final HttpClient client = HttpClient.newBuilder()
@@ -36,7 +37,8 @@ public class GitHubService {
 
     public Map<String, String> exchangeCodeForToken(String code) {
         try {
-            String body = "client_id=" + encode(clientId) + "&client_secret=" + encode(clientSecret) + "&code=" + encode(code);
+            String body = "client_id=" + encode(clientId) + "&client_secret=" + encode(clientSecret)
+                    + "&code=" + encode(code) + "&redirect_uri=" + encode(redirectUri);
             HttpRequest request = HttpRequest.newBuilder(URI.create("https://github.com/login/oauth/access_token"))
                     .timeout(Duration.ofSeconds(60))
                     .header("Accept", "application/json")

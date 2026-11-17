@@ -67,7 +67,7 @@ Flyway applies database migrations during startup.
 | `N8N_WEBHOOK_SECRET` | Header Auth value for the n8n AI relay |
 | `GITHUB_CLIENT_ID` | GitHub OAuth App client ID |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret |
-| `GITHUB_REDIRECT_URI` | Registered GitHub OAuth callback URL |
+| `GITHUB_REDIRECT_URI` | Callback URL sent during token exchange; must match the frontend origin plus `/github/callback` and the registered GitHub OAuth callback |
 | `LOCAL_STORAGE_PATH` | Directory used for uploaded submission files |
 | `DB_SSL_MODE` | PostgreSQL TLS mode, set to `require` for Supabase |
 | `SUPABASE_URL` | Supabase project URL enabling production object storage |
@@ -75,7 +75,7 @@ Flyway applies database migrations during startup.
 | `SUPABASE_STORAGE_BUCKET` | Public Storage bucket, defaults to `talentbridge-files` |
 | `RESEND_API_KEY` | Server-only Resend API key |
 | `RESEND_FROM_EMAIL` | Sender identity, such as `TalentBridge <notifications@example.com>` |
-| `APP_DEMO_MODE` | Enables demo fixture seeding and password synchronization, never password-free login |
+| `APP_DEMO_MODE` | Enables runtime demo entry, demo fixture seeding and password synchronization when `true` |
 | `APP_SEED_COORDINATOR_EMAIL` | Preserved operator/bootstrap identity, defaults to `coordinator@talentbridge.com` |
 | `APP_SEED_COORDINATOR_PASSWORD` | Required only when creating the operator; existing operator credentials are preserved |
 | `APP_SEED_DEMO_PASSWORD` | Required server-only password for the 23 exact fictional demo accounts |
@@ -87,7 +87,14 @@ Flyway applies database migrations during startup.
 
 Development defaults exist for convenience.
 Always override passwords, tokens, and seed credentials in a public deployment.
-Demo accounts use normal email/password login, including `rowan.hale@example.test` (coordinator) and `mira.shah@example.test` (student).
+Normal email/password login remains available for demo accounts, including `rowan.hale@example.test` (coordinator) and `mira.shah@example.test` (student), whether demo mode is enabled or disabled.
+With `APP_DEMO_MODE=true`, public `GET /api/auth/config` exposes only `{demoMode}` with `Cache-Control: no-store`, and an empty-body `POST /api/auth/demo-login` signs in only the approved Rowan coordinator fixture after server-side demo-password verification.
+This public entry grants coordinator privileges and is intended only for demonstration environments; set `APP_DEMO_MODE=false` for private production.
+When `false`, the frontend hides the demo button and direct `POST /api/auth/demo-login` requests return 404.
+The operator is never a target of demo login.
+The demo password stays server-side and is never included in browser code or runtime configuration responses.
+Environment changes require a backend restart or new deployed revision; the frontend reads the runtime flag and does not need a rebuild.
+Keep `APP_SEED_RESET_DEMO_DATA=false` for normal operation.
 All replacement fixture emails use alphabetic names at `example.test`.
 The operator is not a demo fixture and is never deleted or password-synchronized by a demo reset.
 An existing version mismatch is skipped with a warning unless reset is explicitly enabled.
