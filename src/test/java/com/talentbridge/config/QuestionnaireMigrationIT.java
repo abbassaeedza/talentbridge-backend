@@ -42,7 +42,7 @@ class QuestionnaireMigrationIT {
             jdbc.update("INSERT INTO evaluation_reports(id,submission_id,total_score,finalized) VALUES (?,?,84,true)", report, submission);
             jdbc.update("INSERT INTO scorecards(id,student_id,average_score,total_projects) VALUES (?,?,84,1)", scorecard, owner);
             var upgraded = Flyway.configure().dataSource(source).defaultSchema(schema).schemas(schema)
-                    .createSchemas(false).load();
+                    .createSchemas(false).target("12").load();
             upgraded.migrate();
             assertEquals("12", upgraded.info().current().getVersion().getVersion());
             assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM information_schema.columns "

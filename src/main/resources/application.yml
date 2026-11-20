@@ -50,6 +50,12 @@ n8n:
   ai-webhook-url: ${N8N_AI_WEBHOOK_URL:}
   webhook-secret: ${N8N_WEBHOOK_SECRET:}
 
+assessment:
+  ai:
+    daily-limit: ${ASSESSMENT_AI_DAILY_LIMIT:50}
+    generation-timeout-seconds: ${ASSESSMENT_AI_GENERATION_TIMEOUT_SECONDS:60}
+    evaluation-timeout-seconds: ${ASSESSMENT_AI_EVALUATION_TIMEOUT_SECONDS:90}
+
 github:
   api-url: https://api.github.com
   oauth:
