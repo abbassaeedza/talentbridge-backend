@@ -282,6 +282,9 @@ Each candidate has a unique Git/run/attempt revision suffix, a temporary tag, an
 Before candidate startup, the helper checks all eleven exact numeric secret references, absence of sensitive plaintext environment values, the runtime account, port 8080, HTTP startup probe, resource settings, and `APP_SEED_RESET_DEMO_DATA=false`.
 The Cloud Run v1 secret-alias annotation must contain exactly the eleven manifest names mapped to the same secret names in project `1089736501943` or `project-4343c1b3-d768-4b8f-bff`, with no missing, extra, or duplicate aliases.
 It leaves unrelated non-secret configuration and secret references unchanged; it does not read secret payloads.
+The only reviewed environment delta is the seven non-secret entries in [deploy/questionnaire-env.json](../deploy/questionnaire-env.json), initially with enrollment disabled.
+The helper validates those exact names and values before building, applies them with non-destructive `--update-env-vars`, and verifies both environments against the original entries plus only that delta.
+See [Questionnaire operations](QUESTIONNAIRE-OPERATIONS.md) for backend-first rollout, protected activation and recovery gates.
 The deployment explicitly sets `--min=0 --max=1 --min-instances=0 --max-instances=1 --cpu-boost` while preserving the resource and HTTP startup settings.
 The preflight retains its existing secret and resource checks and permits a legacy revision maximum of twenty, so the deployment can repair it.
 Desired scaling and boost checks run only after deployment, before any candidate receives production traffic, and again after promotion.
@@ -291,7 +294,7 @@ An absent minimum annotation means zero; each maximum must explicitly be `'1'`.
 Both revision annotation sets must explicitly contain `run.googleapis.com/startup-cpu-boost: 'true'`.
 The protected main-branch pipeline applies this configuration; no separate manual rollout is required.
 
-The helper verifies candidate image/source metadata and unchanged environment configuration, then invokes the tagged `/api/health/startup` until an actual HTTP `200` is observed within a bounded five-minute window.
+The helper verifies candidate image/source metadata and the exact expected environment configuration, then invokes the tagged `/api/health/startup` until an actual HTTP `200` is observed within a bounded five-minute window.
 Deployment-command success or an uninvoked revision is not sufficient.
 Only that verified revision is explicitly promoted to `100%`.
 After promotion, the helper checks reconciled traffic, source/image identity, secret pins, runtime settings, and preserved environment configuration again.

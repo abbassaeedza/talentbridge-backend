@@ -6,9 +6,15 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 const workflow = readFileSync(new URL('../.github/workflows/deploy-cloud-run.yml', import.meta.url), 'utf8');
+const release = readFileSync(new URL('./release.mjs', import.meta.url), 'utf8');
+const assertEnvironmentDeployment = source => {
+  const deploy = source.match(/gcloud\(\['run', 'deploy',[\s\S]*?\]\);/)?.[0];
+  assert(deploy);
+  assert.match(deploy, /`--update-env-vars=\$\{questionnaire\.map\(e => `\$\{e\.name\}=\$\{e\.value\}`\)\.join\(',\'\)\}`/);
+  assert.doesNotMatch(deploy, /--(?:(?:set|clear|remove)-env-vars|(?:set|clear|remove|update)-secrets|env-vars-file)(?:[=\s'"`]|$)/);
+};
 
 test('deployment explicitly sets both scaling levels, startup boost, and the preserved resource envelope', () => {
-  const release = readFileSync(new URL('./release.mjs', import.meta.url), 'utf8');
   const deploy = release.match(/gcloud\(\['run', 'deploy',[\s\S]*?\]\);/)?.[0];
   assert(deploy);
   const flags = [...deploy.matchAll(/'(--[^']+)'/g)].map(match => match[1]);
@@ -18,6 +24,23 @@ test('deployment explicitly sets both scaling levels, startup boost, and the pre
     '--startup-probe=httpGet.path=/api/health/startup,httpGet.port=8080,periodSeconds=5,timeoutSeconds=5,failureThreshold=48']) {
     assert(flags.includes(flag), `Missing deployment flag: ${flag}`);
   }
+});
+
+test('deployment uses only the mandatory reviewed manifest with a non-destructive environment update', () => {
+  assertEnvironmentDeployment(release);
+  assert.match(release, /new URL\('\.\.\/deploy\/questionnaire-env\.json', import\.meta\.url\)/);
+  assert.match(release, /const environment = releaseEnvironment\(before, questionnaire\)/);
+  assert.match(release, /options = \{ pins, sha, revision, tag, image, digests, environment \}/);
+  assert(release.indexOf('const environment = releaseEnvironment') < release.indexOf("run('docker', ['buildx', 'build'"));
+  assert.doesNotMatch(release, /process\.env\.(APP_QUESTIONNAIRE|ASSESSMENT_TASKS)/);
+  for (const flag of ['--set-env-vars=A=B', '--clear-env-vars', '--remove-env-vars=FRONTEND_URL',
+    '--set-secrets=A=B', '--clear-secrets', '--remove-secrets=JWT_SECRET', '--update-secrets=A=B', '--env-vars-file=private']) {
+    for (const quote of ["'", '"', '`']) {
+      const unsafe = release.replace("'--no-traffic'", `'--no-traffic', ${quote}${flag}${quote}`);
+      assert.throws(() => assertEnvironmentDeployment(unsafe), assert.AssertionError);
+    }
+  }
+  assert.throws(() => assertEnvironmentDeployment(release.replace('--update-env-vars=', '--set-env-vars=')), assert.AssertionError);
 });
 
 test('PR and main checks are separate, synthetic, and cannot request OIDC', () => {
