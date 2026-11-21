@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { resolveImage, verifyConfig, releaseEnvironment, verifyCandidate, verifyPromotion } from './release.mjs';
 
@@ -68,8 +70,10 @@ const rejects = (fn, code) => assert.throws(fn, error => error.message === code)
 const options = { pins, sha, revision, tag, image, digests: [index, child], environment: releaseEnvironment(service(), questionnaire) };
 
 function executeRelease(manifest, before, failCloudRead = false) {
-  const entry = new URL('./release.mjs', import.meta.url);
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+  const directory = mkdtempSync(join(tmpdir(), 'release-entry-test-'));
+  try {
+    const entry = new URL('./release.mjs', import.meta.url);
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import commands from 'node:child_process';
     import fs from 'node:fs';
     import { syncBuiltinESMExports } from 'node:module';
@@ -94,14 +98,19 @@ function executeRelease(manifest, before, failCloudRead = false) {
     process.argv[1] = fileURLToPath(entry);
     process.on('beforeExit', () => console.log(JSON.stringify(events)));
     await import(entry.href);
-  `], { encoding: 'utf8', timeout: 5000, env: {
-    HOME: '/private/tmp', TMPDIR: '/private/tmp', RUNNER_TEMP: '/private/tmp',
-    GITHUB_SHA: sha, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1',
-    GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'push',
-  } });
-  assert.equal(result.error, undefined);
-  assert.equal(result.status, 1);
-  return { events: JSON.parse(result.stdout), error: result.stderr.trim() };
+    `], { encoding: 'utf8', timeout: 5000, env: {
+      HOME: directory, TMPDIR: directory, RUNNER_TEMP: directory,
+      GITHUB_SHA: sha, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1',
+      GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'push',
+    } });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1);
+    assert.deepEqual(readdirSync(directory), []);
+    return { events: JSON.parse(result.stdout), error: result.stderr.trim() };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+    assert.equal(existsSync(directory), false);
+  }
 }
 
 test('actual release entry rejects malformed local manifest before any cloud command', () => {
@@ -124,7 +133,7 @@ test('actual release entry with valid manifest retains metadata and baseline gua
   ]) {
     const before = service(); mutate(before);
     const result = executeRelease(JSON.stringify(questionnaire), before);
-    assert.equal(result.error, error);
+    assert.equal(result.error, error, JSON.stringify(result.events));
     assert.equal(result.events.filter(e => e === 'manifest').length, 1);
     const cloud = result.events.filter(e => Array.isArray(e) && e[0] === 'gcloud');
     assert.equal(cloud.length, calls);
