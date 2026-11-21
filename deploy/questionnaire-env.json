@@ -1,5 +1,5 @@
 [
-  { "name": "APP_QUESTIONNAIRE_ENABLED", "value": "false" },
+  { "name": "APP_QUESTIONNAIRE_ENABLED", "value": "true" },
   { "name": "ASSESSMENT_TASKS_PROJECT", "value": "project-4343c1b3-d768-4b8f-bff" },
   { "name": "ASSESSMENT_TASKS_LOCATION", "value": "asia-south1" },
   { "name": "ASSESSMENT_TASKS_QUEUE", "value": "talentbridge-assessments" },
