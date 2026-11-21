@@ -1,6 +1,10 @@
 package com.talentbridge.controller;
 import com.talentbridge.dto.response.SubmissionResponse;
 import com.talentbridge.service.SubmissionService;
+import com.talentbridge.service.QuestionnaireFinalSubmissionService;
+import com.talentbridge.service.QuestionnaireGenerationService;
+import com.talentbridge.dto.request.FinalSubmissionRequest;
+import org.springframework.http.ResponseEntity;
 import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -14,6 +18,8 @@ import java.util.UUID;
 @RestController @RequestMapping("/api/submissions") @RequiredArgsConstructor @Validated
 public class SubmissionController {
     private final SubmissionService submissionService;
+    private final QuestionnaireFinalSubmissionService finalization;
+    private final QuestionnaireGenerationService generation;
 
     @PostMapping("/{partyId}/draft")
     @PreAuthorize("hasRole('STUDENT')")
@@ -29,8 +35,21 @@ public class SubmissionController {
     @PostMapping("/{partyId}/submit")
     @PreAuthorize("hasRole('STUDENT')")
     public SubmissionResponse finalSubmit(@PathVariable UUID partyId,
-                                  @AuthenticationPrincipal UUID leaderId) {
-        return submissionService.finalSubmit(partyId, leaderId);
+                                  @AuthenticationPrincipal UUID leaderId,
+                                  @RequestBody(required=false) FinalSubmissionRequest request) {
+        return finalization.finalSubmit(partyId, leaderId, request==null?null:request.expectedVersion());
+    }
+
+    @PostMapping("/{submissionId}/questionnaire/retry")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public ResponseEntity<QuestionnaireGenerationService.Review> retry(@PathVariable UUID submissionId) {
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore()).body(generation.retry(submissionId));
+    }
+
+    @GetMapping("/{submissionId}/questionnaire-review")
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public ResponseEntity<QuestionnaireGenerationService.Review> review(@PathVariable UUID submissionId) {
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore()).body(generation.review(submissionId));
     }
 
     @GetMapping("/{partyId}")

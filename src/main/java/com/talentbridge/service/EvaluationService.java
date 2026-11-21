@@ -31,6 +31,7 @@ public class EvaluationService {
     public EvaluationReportResponse triggerEvaluation(UUID submissionId, UUID coordinatorId) {
         Submission submission = submissionRepository.findById(submissionId)
             .orElseThrow(() -> new ResourceNotFoundException("Submission", submissionId.toString()));
+        requireLegacy(submission);
         User coordinator = userRepository.findById(coordinatorId)
             .orElseThrow(() -> new ResourceNotFoundException("User", coordinatorId.toString()));
         if (submission.getStatus() == SubmissionStatus.EVALUATED)
@@ -65,6 +66,7 @@ public class EvaluationService {
     public EvaluationReportResponse finalizeReport(UUID reportId, UUID coordinatorId) {
         EvaluationReport report = evaluationReportRepository.findById(reportId)
             .orElseThrow(() -> new ResourceNotFoundException("EvaluationReport", reportId.toString()));
+        requireLegacy(report.getSubmission());
         if (report.isFinalized()) throw new BadRequestException("Already finalized");
         report.setFinalized(true);
         return EvaluationReportResponse.from(evaluationReportRepository.save(report));
@@ -79,6 +81,7 @@ public class EvaluationService {
         }
 
         Submission submission = report.getSubmission();
+        requireLegacy(submission);
         Party party = submission.getParty();
         String token = party.getLeader().getGithubAccessToken();
         GitHubService.ContributorData contributors =
@@ -94,6 +97,11 @@ public class EvaluationService {
         notificationService.notifyEvaluationComplete(party, saved);
         log.info("Evaluation contributions refreshed. Score: {}", saved.getTotalScore());
         return EvaluationReportResponse.from(saved);
+    }
+
+    private static void requireLegacy(Submission submission) {
+        if (submission.getAssessmentVersion() != 1)
+            throw new BadRequestException("Questionnaire assessment requires asynchronous evaluation");
     }
 
     @Transactional(readOnly = true)

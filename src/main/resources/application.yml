@@ -51,6 +51,13 @@ n8n:
   webhook-secret: ${N8N_WEBHOOK_SECRET:}
 
 assessment:
+  tasks:
+    project: ${ASSESSMENT_TASKS_PROJECT:}
+    location: ${ASSESSMENT_TASKS_LOCATION:}
+    queue: ${ASSESSMENT_TASKS_QUEUE:}
+    target: ${ASSESSMENT_TASKS_TARGET:}
+    audience: ${ASSESSMENT_TASKS_AUDIENCE:}
+    caller-email: ${ASSESSMENT_TASKS_CALLER_EMAIL:}
   ai:
     daily-limit: ${ASSESSMENT_AI_DAILY_LIMIT:50}
     generation-timeout-seconds: ${ASSESSMENT_AI_GENERATION_TIMEOUT_SECONDS:60}
@@ -76,6 +83,7 @@ resend:
   from-email: ${RESEND_FROM_EMAIL:}
 
 app:
+  questionnaire-enabled: ${APP_QUESTIONNAIRE_ENABLED:false}
   demo-mode: ${APP_DEMO_MODE:false}
   seed:
     coordinator-email: ${APP_SEED_COORDINATOR_EMAIL:coordinator@talentbridge.com}

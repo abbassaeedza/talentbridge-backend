@@ -26,7 +26,7 @@ public class QuestionnaireService {
         Instant now = clock.instant();
         return assignments.findAllByStudentIdOrderByCreatedAtDesc(studentId).stream().map(a -> {
             QuestionnaireResponse r = response(a, now);
-            return new QuestionnaireSummaryResponse(r.id(), r.submissionId(), r.assessmentVersion(), r.state(),
+            return new QuestionnaireSummaryResponse(r.id(), r.submissionId(), r.assessmentVersion(), r.projectTitle(), r.state(),
                     r.answerState(), r.revision(), r.answeredCount(), r.editable(), r.opensAt(), r.closesAt(), now);
         }).toList();
     }
@@ -83,7 +83,7 @@ public class QuestionnaireService {
                 : expired ? (complete ? "LOCKED_COMPLETE" : "INCOMPLETE") : complete ? "COMPLETE" : "DRAFT";
         QuestionnaireState state = s.getState() == QuestionnaireState.OPEN && expired
                 ? QuestionnaireState.READY_FOR_EVALUATION : s.getState();
-        return new QuestionnaireResponse(a.getId(), s.getSubmission().getId(), s.getAssessmentVersion(), state,
+        return new QuestionnaireResponse(a.getId(), s.getSubmission().getId(), s.getAssessmentVersion(), s.getFrozenLabel(), state,
                 answerState, a.getRevision(), answered, editable(s, now), s.getOpensAt(), s.getClosesAt(), now,
                 a.getSavedAt(), questions);
     }

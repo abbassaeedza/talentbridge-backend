@@ -142,8 +142,12 @@ public class AssessmentAIService {
     }
 
     public GeneratedQuestions generate(PreparedGeneration prepared) {
+        return generate(prepared, () -> {});
+    }
+
+    public GeneratedQuestions generate(PreparedGeneration prepared, Runnable beforeAttempt) {
         require(prepared != null, "INVALID_INPUT");
-        JsonNode result = call(prepared.request);
+        JsonNode result = call(prepared.request, beforeAttempt);
         shape(result, "memberId", "questions");
         require(prepared.member.equals(id(result.get("memberId"))), "INVALID_RESPONSE");
         array(result.get("questions"),5);
@@ -197,8 +201,13 @@ public class AssessmentAIService {
     }
 
     private JsonNode call(OpenAIService.PreparedAssessment request) {
+        return call(request, () -> {});
+    }
+
+    private JsonNode call(OpenAIService.PreparedAssessment request, Runnable beforeAttempt) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) throw new IllegalStateException("Assessment calls require a nontransactional caller");
         quota.reserve();
+        beforeAttempt.run();
         String response=transport.executeAssessment(request);
         try { return json.readTree(response); } catch (Exception e) { throw new AssessmentException("INVALID_RESPONSE"); }
     }

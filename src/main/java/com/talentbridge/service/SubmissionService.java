@@ -43,7 +43,7 @@ public class SubmissionService {
             documents.stream().filter(f -> !f.isEmpty())
                 .forEach(f -> sub.getDocumentUrls().add(fileStorageService.upload(f, "submissions/" + partyId)));
 
-        return toResponse(submissionRepository.save(sub));
+        return toResponse(submissionRepository.saveAndFlush(sub));
     }
 
     @Transactional
@@ -104,11 +104,12 @@ public class SubmissionService {
             || (project.getAssignedParty() != null && project.getAssignedParty().getSupervisor() != null
                 && project.getAssignedParty().getSupervisor().getId().equals(viewerId));
         if (!allowed) throw new ForbiddenException("You cannot view submissions for this project");
-        return submissions.stream().map(this::toResponse).toList();
+        return submissions.stream().map(SubmissionService::toResponse).toList();
     }
 
-    private SubmissionResponse toResponse(Submission submission) {
+    static SubmissionResponse toResponse(Submission submission) {
         return SubmissionResponse.builder()
+                .version(submission.getVersion()).assessmentVersion(submission.getAssessmentVersion())
                 .id(submission.getId())
                 .partyId(submission.getParty().getId())
                 .partyName(submission.getParty().getName())

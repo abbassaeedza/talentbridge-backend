@@ -15,6 +15,8 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 public class SubmissionResponse {
+    private long version;
+    private int assessmentVersion;
     private UUID id;
     private UUID partyId;
     private String partyName;

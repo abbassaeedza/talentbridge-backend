@@ -17,6 +17,7 @@ public class QuestionnaireAssignment extends BaseEntity {
     @JsonIgnore private QuestionnaireSnapshot snapshot;
     @Column(nullable = false, updatable = false) private UUID studentId;
     @Column(nullable = false, length = 255, updatable = false) private String studentName;
+    @JsonIgnore @Column(length = 100, updatable = false) private String githubLogin;
     @Version private long revision;
     @OneToMany(mappedBy = "assignment", cascade = CascadeType.ALL) @OrderBy("position ASC")
     @Builder.Default @JsonIgnore private List<QuestionnaireQuestion> questions = new ArrayList<>();

@@ -414,9 +414,23 @@ class GitHubEvidenceServiceTest {
         assertTrue(requests.get(0).headers().firstValue("Authorization").isEmpty());
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {100, 101, 255})
+    void resolvesOmittedDefaultBranchAtEvidenceStorageBoundaries(int length) {
+        String name = "a".repeat(length);
+        reply(ROOT, 200, "{\"default_branch\":\"" + name + "\"}");
+        branch(name);
+        var resolved = service.resolveRepository("https://github.com/acme/demo", null, null);
+        assertNull(resolved.requestedBranch());
+        assertEquals(name, resolved.resolvedBranch());
+        assertEquals(COMMIT, resolved.commitSha());
+        assertEquals(TREE, resolved.treeSha());
+        assertEquals(List.of(ROOT, ROOT + "/branches/" + name), requests.stream().map(r -> r.uri().toString()).toList());
+    }
+
     @Test
     void rejectsInvalidBriefOrTokenBeforeHttp() {
-        for (String brief : List.of("", "b".repeat(8001), "\ud800")) {
+        for (String brief : List.of("", "b".repeat(96001), "\ud800")) {
             failure(Failure.INVALID_INPUT, () -> service.capture("https://github.com/acme/demo", null, brief, null));
         }
         failure(Failure.INVALID_INPUT, () -> service.resolveRepository("https://github.com/acme/demo", null, "bad\r\nvalue"));

@@ -72,13 +72,13 @@ public class GitHubEvidenceService {
     }
 
     public GitHubEvidence capture(String url, String branch, String brief, String token) {
-        require(brief != null && !brief.isBlank() && brief.length() <= 8000 && validUnicode(brief), Failure.INVALID_INPUT);
+        require(brief != null && !brief.isBlank() && brief.length() <= 96000 && validUnicode(brief), Failure.INVALID_INPUT);
         long deadline = deadline();
         return capture(resolveRepository(url, branch, token, deadline), brief, token, deadline);
     }
 
     private GitHubEvidence capture(Resolution resolution, String brief, String token, long deadline) {
-        require(brief != null && !brief.isBlank() && brief.length() <= 8000 && validUnicode(brief), Failure.INVALID_INPUT);
+        require(brief != null && !brief.isBlank() && brief.length() <= 96000 && validUnicode(brief), Failure.INVALID_INPUT);
         require(resolution != null && resolution.repository() != null, Failure.INVALID_RESOLUTION);
         try {
             require(repository(resolution.repository().url()).equals(resolution.repository()), Failure.INVALID_RESOLUTION);

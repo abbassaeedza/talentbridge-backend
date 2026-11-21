@@ -7,6 +7,9 @@ import jakarta.persistence.*;
 import lombok.*;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.List;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity @Table(name = "questionnaire_jobs")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
@@ -21,6 +24,9 @@ public class QuestionnaireJob extends BaseEntity {
     @Builder.Default private QuestionnaireJobStatus status = QuestionnaireJobStatus.PENDING;
     private int attempts;
     private int dispatchGeneration;
+    @Column(updatable = false) private UUID retryOf;
+    @JdbcTypeCode(SqlTypes.JSON) @Column(nullable = false, columnDefinition = "jsonb")
+    @Builder.Default @JsonIgnore private List<UUID> questionIds = List.of();
     private UUID leaseToken;
     private Instant leaseUntil;
     private Instant nextAttemptAt;

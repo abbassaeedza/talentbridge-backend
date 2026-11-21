@@ -56,6 +56,17 @@ class AssessmentAIServiceTest {
     }
     @AfterEach void stop() { server.stop(0); }
 
+    @Test void durableAttemptCallbackRunsAfterQuotaButBeforeTheSingleProviderRequest() {
+        var ordered=inOrder(quota); var recorded=new java.util.concurrent.atomic.AtomicBoolean();
+        var result=service.generate(prepared(),()->{
+            ordered.verify(quota).reserve(); assertEquals(0,calls.get()); recorded.set(true);
+        });
+        assertTrue(recorded.get()); assertEquals(member,result.memberId()); assertEquals(1,calls.get());
+        doThrow(new AssessmentQuotaService.QuotaExceeded(Instant.parse("2026-11-21T19:00:00Z"))).when(quota).reserve();
+        assertThrows(AssessmentQuotaService.QuotaExceeded.class,()->service.generate(prepared(),()->fail("No actual attempt may be recorded for quota deferral")));
+        assertEquals(1,calls.get());
+    }
+
     GitHubEvidence evidence() {
         return new GitHubEvidence(new Resolution(new Repository("synthetic", "repo", "https://github.com/synthetic/repo"),
                 null, "main", "a".repeat(40), "b".repeat(40)), Instant.EPOCH, List.of(),
