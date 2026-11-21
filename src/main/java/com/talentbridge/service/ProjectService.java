@@ -253,6 +253,7 @@ public class ProjectService {
 
         project.setStatus(ProjectStatus.ASSIGNED);
         party.setAssignedProject(project);
+        project.setAssignedParty(party);
         party.setStatus(PartyStatus.ASSIGNED);
         projectRepository.save(project);
         partyRepository.save(party);

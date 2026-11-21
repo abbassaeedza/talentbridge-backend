@@ -178,8 +178,10 @@ class ProjectServiceDeadlineTest {
         otherProject.setId(otherProjectId);
         Party party = Party.builder()
                 .leader(leader)
+                .name("Selected party")
                 .members(new java.util.HashSet<>(List.of(leader, member)))
                 .build();
+        party.setId(partyId);
         Application selected = Application.builder()
                 .party(party).project(project).rankPosition(1).status(ApplicationStatus.PENDING).build();
         Application other = Application.builder()
@@ -193,10 +195,16 @@ class ProjectServiceDeadlineTest {
         when(applicationRepository.findByProjectIdAndStatus(projectId, ApplicationStatus.PENDING))
                 .thenReturn(List.of());
 
-        projectService.assignToParty(projectId, partyId, UUID.randomUUID());
+        var response = projectService.assignToParty(projectId, partyId, UUID.randomUUID());
 
         assertEquals(ApplicationStatus.ASSIGNED, selected.getStatus());
         assertEquals(ApplicationStatus.WITHDRAWN, other.getStatus());
+        assertEquals(projectId, response.getId());
+        assertEquals(ProjectStatus.ASSIGNED, response.getStatus());
+        assertEquals(partyId, response.getAssignedPartyId());
+        assertEquals("Selected party", response.getAssignedPartyName());
+        assertEquals(project, party.getAssignedProject());
+        assertEquals(party, project.getAssignedParty());
     }
 
     @Test

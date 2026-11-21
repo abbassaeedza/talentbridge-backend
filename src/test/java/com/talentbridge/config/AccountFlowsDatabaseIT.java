@@ -39,7 +39,7 @@ import static org.mockito.Mockito.*;
         "jwt.expiration-ms=60000", "jwt.refresh-expiration-ms=120000", "app.frontend-url=http://localhost:3000"})
 class AccountFlowsDatabaseIT {
     @TestConfiguration(proxyBeanMethods = false)
-    @Import(ProjectSupervisorInvitationService.class)
+    @Import({ProjectSupervisorInvitationService.class, ProjectService.class, PartyService.class, AppProperties.class})
     static class InvitationConfig {
         @Bean EmailService emailService() { return mock(EmailService.class); }
     }
@@ -47,6 +47,8 @@ class AccountFlowsDatabaseIT {
     @Autowired UserService service;
     @Autowired AuthService auth;
     @Autowired ProjectSupervisorInvitationService invitationService;
+    @Autowired ProjectService projectService;
+    @Autowired PartyService partyService;
     @Autowired UserRepository users;
     @Autowired StudentProfileRepository students;
     @Autowired CompanyProfileRepository companies;
@@ -87,6 +89,60 @@ class AccountFlowsDatabaseIT {
 
     UpdateProfileRequest update(String json) throws Exception {
         return mapper.readValue(json, UpdateProfileRequest.class);
+    }
+
+    @Test
+    void assignmentHttpReturnsTheCommittedPartyImmediatelyAndUnassignClearsFreshReads() throws Exception {
+        UUID projectId=UUID.randomUUID(), partyId=UUID.randomUUID();
+        User coordinator=account(UserRole.COORDINATOR,UserStatus.APPROVED,"assignment-coordinator@example.test");
+        User member=account(UserRole.STUDENT,UserStatus.APPROVED,"assignment-member@example.test");
+        jdbc.update("INSERT INTO projects(id,title,created_by_id,company_id,status) VALUES (?,'Assignment project',?,?,'OPEN')",projectId,owner.getId(),company.getId());
+        jdbc.update("INSERT INTO parties(id,name,leader_id,status) VALUES (?,'Selected party',?,'ACTIVE')",partyId,student.getId());
+        for(UUID id:List.of(student.getId(),member.getId())) jdbc.update("INSERT INTO party_members(party_id,user_id) VALUES (?,?)",partyId,id);
+        var security=org.springframework.security.core.context.SecurityContextHolder.getContext();
+        security.setAuthentication(new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(coordinator.getId(),null,
+                List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_COORDINATOR"))));
+        var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(
+                new com.talentbridge.controller.ProjectController(projectService),new com.talentbridge.controller.PartyController(partyService))
+                .setControllerAdvice(new com.talentbridge.exception.GlobalExceptionHandler())
+                .setCustomArgumentResolvers(new org.springframework.security.web.method.annotation.AuthenticationPrincipalArgumentResolver()).build();
+        try {
+            var immediate=mapper.readTree(mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/projects/{projectId}/assign/{partyId}",projectId,partyId))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk()).andReturn().getResponse().getContentAsString());
+            assertEquals(projectId,jdbc.queryForObject("SELECT assigned_project_id FROM parties WHERE id=?",UUID.class,partyId));
+            assertEquals("ASSIGNED",jdbc.queryForObject("SELECT status FROM projects WHERE id=?",String.class,projectId));
+            var fresh=mapper.readTree(mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/projects/{id}",projectId))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk()).andReturn().getResponse().getContentAsString());
+            var freshParty=mapper.readTree(mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/parties/{id}",partyId))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk()).andReturn().getResponse().getContentAsString());
+            assertEquals(partyId.toString(),fresh.path("assignedPartyId").asText());
+            assertEquals("Selected party",fresh.path("assignedPartyName").asText());
+            assertEquals(projectId.toString(),freshParty.path("assignedProjectId").asText());
+            assertEquals("ASSIGNED",freshParty.path("status").asText()); assertEquals(2,freshParty.path("members").size());
+            assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM submissions WHERE party_id=?",Integer.class,partyId));
+            System.out.println("ASSIGNMENT_HTTP_REPRO immediateStatus="+immediate.path("status").asText()
+                    +" immediateAssignedPartyId="+immediate.path("assignedPartyId")+" immediateAssignedPartyName="+immediate.path("assignedPartyName")
+                    +" committedAssociationAndFreshProjectAndPartyGetMatch=true");
+            assertAll(()->assertEquals(projectId.toString(),immediate.path("id").asText()),
+                    ()->assertEquals("ASSIGNED",immediate.path("status").asText()),
+                    ()->assertEquals(partyId.toString(),immediate.path("assignedPartyId").asText()),
+                    ()->assertEquals("Selected party",immediate.path("assignedPartyName").asText()));
+            var unassigned=mapper.readTree(mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/parties/{id}/project",partyId))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk()).andReturn().getResponse().getContentAsString());
+            assertTrue(unassigned.path("assignedProjectId").isNull()); assertEquals("ACTIVE",unassigned.path("status").asText());
+            assertNull(jdbc.queryForObject("SELECT assigned_project_id FROM parties WHERE id=?",UUID.class,partyId));
+            var reopened=mapper.readTree(mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/projects/{id}",projectId))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk()).andReturn().getResponse().getContentAsString());
+            assertEquals("OPEN",reopened.path("status").asText());
+            assertTrue(reopened.path("assignedPartyId").isNull()); assertTrue(reopened.path("assignedPartyName").isNull());
+        } finally {
+            org.springframework.security.core.context.SecurityContextHolder.clearContext();
+            jdbc.update("DELETE FROM applications WHERE party_id=?",partyId);
+            jdbc.update("DELETE FROM party_members WHERE party_id=?",partyId);
+            jdbc.update("DELETE FROM parties WHERE id=?",partyId);
+            jdbc.update("DELETE FROM projects WHERE id=?",projectId);
+            jdbc.update("DELETE FROM users WHERE id IN (?,?)",coordinator.getId(),member.getId());
+        }
     }
 
     @Test
