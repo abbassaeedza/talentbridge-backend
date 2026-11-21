@@ -21,7 +21,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body ?? $json;\nconst operation = body.operation;\nif (!['chat', 'chat_guard', 'evaluation'].includes(operation)) throw new Error('Unsupported operation');\nif (typeof body.system !== 'string' || !body.system.trim()) throw new Error('system is required');\nif (typeof body.message !== 'string' || !body.message.trim()) throw new Error('message is required');\nconst history = Array.isArray(body.history) ? body.history.slice(-10).flatMap(item => {\n  if (!item || !['user', 'assistant'].includes(item.role) || typeof item.content !== 'string' || !item.content.trim()) return [];\n  return [`${item.role}: ${item.content.trim().slice(0, 4000)}`];\n}) : [];\nconst message = body.message.trim().slice(0, 12000);\nconst prompt = [...history, `user: ${message}`].join('\\n');\nconst maxTokens = Math.min(Math.max(Math.trunc(Number(body.maxTokens)) || 512, 1), 2048);\nreturn [{ json: {\n  operation,\n  system: body.system.trim().slice(0, 60000),\n  prompt,\n  model: typeof body.model === 'string' && body.model.trim() ? body.model.trim() : 'gpt-4o-mini',\n  maxTokens,\n  temperature: operation === 'chat' ? 0.4 : 0\n} }];"
+        "jsCode": "const body = $json.body ?? $json;\nconst operation = body.operation;\nif (!['chat', 'chat_guard', 'evaluation', 'questionnaire_generation', 'questionnaire_evaluation'].includes(operation)) throw new Error('Unsupported operation');\nif (typeof body.system !== 'string' || !body.system.trim()) throw new Error('system is required');\nif (typeof body.message !== 'string' || !body.message.trim()) throw new Error('message is required');\nif (operation.startsWith('questionnaire_')) {\n  const generation = operation === 'questionnaire_generation';\n  const limit = generation ? 64000 : 96000;\n  const maxTokens = generation ? 4096 : 8192;\n  if (body.system.length + body.message.length > limit) throw new Error('Assessment input too large');\n  if (!['gpt-4o', 'gpt-4o-mini'].includes(body.model)) throw new Error('Unsupported assessment model');\n  if (body.maxTokens !== maxTokens) throw new Error('Invalid assessment token cap');\n  if (!Array.isArray(body.history) || body.history.length !== 0) throw new Error('Assessment history is not allowed');\n  for (const text of [body.system, body.message]) {\n    for (let i = 0; i < text.length; i++) {\n      const c = text.charCodeAt(i);\n      if (c === 0) throw new Error('Invalid assessment Unicode');\n      if (c >= 0xD800 && c <= 0xDBFF) {\n        const next = text.charCodeAt(++i);\n        if (!(next >= 0xDC00 && next <= 0xDFFF)) throw new Error('Invalid assessment Unicode');\n      } else if (c >= 0xDC00 && c <= 0xDFFF) throw new Error('Invalid assessment Unicode');\n    }\n  }\n  return [{ json: { operation, system: body.system, prompt: body.message, model: body.model, maxTokens, temperature: 0 } }];\n}\nconst history = Array.isArray(body.history) ? body.history.slice(-10).flatMap(item => {\n  if (!item || !['user', 'assistant'].includes(item.role) || typeof item.content !== 'string' || !item.content.trim()) return [];\n  return [`${item.role}: ${item.content.trim().slice(0, 4000)}`];\n}) : [];\nconst message = body.message.trim().slice(0, 12000);\nconst prompt = [...history, `user: ${message}`].join('\\n');\nconst maxTokens = Math.min(Math.max(Math.trunc(Number(body.maxTokens)) || 512, 1), 2048);\nreturn [{ json: {\n  operation,\n  system: body.system.trim().slice(0, 60000),\n  prompt,\n  model: typeof body.model === 'string' && body.model.trim() ? body.model.trim() : 'gpt-4o-mini',\n  maxTokens,\n  temperature: operation === 'chat' ? 0.4 : 0\n} }];"
       },
       "id": "0e1a0f1c-f607-4d37-924b-2e013c0bc0f6",
       "name": "Prepare Input",
@@ -34,7 +34,9 @@
         "promptType": "define",
         "text": "={{ $json.prompt }}",
         "options": {
-          "systemMessage": "={{ $json.system }}"
+          "systemMessage": "={{ $json.system }}",
+          "maxIterations": "={{ $('Prepare Input').item.json.operation.startsWith('questionnaire_') ? 1 : 10 }}",
+          "enableStreaming": "={{ !$('Prepare Input').item.json.operation.startsWith('questionnaire_') }}"
         }
       },
       "id": "484bf1f1-bec9-4ea6-85df-3fa90898209d",
@@ -52,7 +54,9 @@
         },
         "options": {
           "maxTokens": "={{ $('Prepare Input').item.json.maxTokens }}",
-          "temperature": "={{ $('Prepare Input').item.json.temperature }}"
+          "temperature": "={{ $('Prepare Input').item.json.temperature }}",
+          "maxRetries": "={{ $('Prepare Input').item.json.operation.startsWith('questionnaire_') ? 0 : 2 }}",
+          "timeout": "={{ $('Prepare Input').item.json.operation === 'questionnaire_generation' ? 50000 : ($('Prepare Input').item.json.operation === 'questionnaire_evaluation' ? 80000 : 60000) }}"
         }
       },
       "id": "0bbfcfa3-b0d8-4213-aa91-a84fea2fe01a",
@@ -68,7 +72,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const raw = String($json.output ?? $json.text ?? $json.message?.content ?? '').trim();\nif (!raw) throw new Error('OpenAI returned no message');\nconst message = raw.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '').trim();\nreturn [{ json: { message } }];"
+        "jsCode": "const assessment = $('Prepare Input').item.json.operation.startsWith('questionnaire_');\nif (assessment) {\n  const raw = $json.output ?? $json.text ?? $json.message?.content;\n  if (typeof raw !== 'string' || !raw.trim() || raw.length > 131072) throw new Error('Invalid assessment response');\n  return [{ json: { message: raw } }];\n}\nconst raw = String($json.output ?? $json.text ?? $json.message?.content ?? '').trim();\nif (!raw) throw new Error('OpenAI returned no message');\nconst message = raw.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '').trim();\nreturn [{ json: { message } }];"
       },
       "id": "f11ce5e3-3765-4e71-9879-76b868f7f6b6",
       "name": "Normalize Response",

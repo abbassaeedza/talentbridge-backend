@@ -20,6 +20,13 @@ import java.time.Duration;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Locale;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.*;
+import java.util.concurrent.Flow;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import static com.talentbridge.service.AssessmentAIService.*;
 
 @Service
 @Slf4j
@@ -33,6 +40,8 @@ public class OpenAIService {
     @Value("${openai.timeout-seconds}") private int timeoutSeconds;
     @Value("${n8n.ai-webhook-url:}") private String n8nWebhookUrl;
     @Value("${n8n.webhook-secret:}") private String n8nWebhookSecret;
+    @Value("${assessment.ai.generation-timeout-seconds:60}") private int generationTimeoutSeconds = 60;
+    @Value("${assessment.ai.evaluation-timeout-seconds:90}") private int evaluationTimeoutSeconds = 90;
 
     private final ObjectMapper mapper;
     private final HttpClient client = HttpClient.newBuilder()
@@ -52,6 +61,84 @@ public class OpenAIService {
     }
 
     public String chatModel() { return chatModel; }
+
+    // Prepared requests freeze configuration and serialization before any quota reservation.
+    static final class PreparedAssessment {
+        private final HttpRequest request;
+        private PreparedAssessment(HttpRequest request) { this.request = request; }
+    }
+
+    PreparedAssessment prepareAssessment(String operation, String system, String message) {
+        boolean generation = "questionnaire_generation".equals(operation);
+        require(generation || "questionnaire_evaluation".equals(operation), "INVALID_OPERATION");
+        int cap = generation ? 64000 : 96000;
+        require(system != null && message != null, "INVALID_INPUT");
+        require((long) system.length() + message.length() <= cap, "INPUT_TOO_LARGE");
+        validText(system, 1, cap, "INVALID_INPUT"); validText(message, 1, cap, "INVALID_INPUT");
+        int seconds = generation ? generationTimeoutSeconds : evaluationTimeoutSeconds;
+        require(seconds >= 1 && seconds <= (generation ? 60 : 90), "INVALID_RELAY_CONFIGURATION");
+        require(n8nWebhookUrl != null && !n8nWebhookUrl.isBlank() && n8nWebhookSecret != null
+                && !n8nWebhookSecret.isBlank() && ("gpt-4o".equals(evalModel) || "gpt-4o-mini".equals(evalModel)), "INVALID_RELAY_CONFIGURATION");
+        try {
+            URI uri = URI.create(n8nWebhookUrl);
+            require(uri.getHost() != null && uri.getUserInfo() == null && uri.getFragment() == null
+                    && ("https".equals(uri.getScheme()) || ("http".equals(uri.getScheme())
+                    && ("127.0.0.1".equals(uri.getHost()) || "localhost".equals(uri.getHost())))), "INVALID_RELAY_CONFIGURATION");
+            ObjectNode body = relayBody(operation, evalModel, system, message, null, generation ? 4096 : 8192);
+            return new PreparedAssessment(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(seconds))
+                    .header("X-TB-Secret", n8nWebhookSecret).header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body))).build());
+        } catch (AssessmentException e) { throw e; }
+        catch (Exception e) { throw new AssessmentException("INVALID_RELAY_CONFIGURATION"); }
+    }
+
+    String executeAssessment(PreparedAssessment prepared) {
+        long deadline = System.nanoTime() + prepared.request.timeout().orElseThrow().toNanos();
+        try {
+            HttpResponse<byte[]> response = client.send(prepared.request,
+                    info -> new AssessmentBody(262144, deadline - System.nanoTime()));
+            require(response.statusCode() >= 200 && response.statusCode() < 300, "RELAY_HTTP_FAILURE");
+            String body = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(response.body())).toString();
+            JsonNode envelope = mapper.copy().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                    .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(body);
+            require(envelope != null && envelope.isObject() && envelope.size() == 1
+                    && envelope.path("message").isTextual(), "INVALID_RESPONSE");
+            String content = envelope.get("message").textValue(); validText(content, 1, 131072, "INVALID_RESPONSE");
+            return content;
+        } catch (AssessmentException e) { throw e; }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssessmentException("RELAY_INTERRUPTED"); }
+        catch (Exception e) { throw new AssessmentException("RELAY_FAILURE"); }
+    }
+
+    private static final class AssessmentBody implements HttpResponse.BodySubscriber<byte[]> {
+        private final HttpResponse.BodySubscriber<byte[]> delegate = HttpResponse.BodySubscribers.ofByteArray();
+        private final int limit;
+        private Flow.Subscription subscription;
+        private int received;
+        private boolean stopped;
+        private AssessmentBody(int limit, long remaining) {
+            this.limit = limit;
+            // JDK 17 stops its request timer at headers, so cancel stalled body consumption too.
+            delegate.getBody().toCompletableFuture().orTimeout(Math.max(1, remaining), TimeUnit.NANOSECONDS)
+                    .whenComplete((body, error) -> { if (error instanceof TimeoutException) onError(error); });
+        }
+        public CompletionStage<byte[]> getBody() { return delegate.getBody(); }
+        public synchronized void onSubscribe(Flow.Subscription subscription) {
+            this.subscription = subscription; if (stopped) subscription.cancel(); else delegate.onSubscribe(subscription);
+        }
+        public synchronized void onNext(List<ByteBuffer> items) {
+            if (stopped) return;
+            for (ByteBuffer item : items) {
+                if (item.remaining() > limit - received) { onError(new AssessmentException("RESPONSE_TOO_LARGE")); return; }
+                received += item.remaining();
+            }
+            delegate.onNext(items);
+        }
+        public synchronized void onError(Throwable error) {
+            if (!stopped) { stopped = true; if (subscription != null) subscription.cancel(); delegate.onError(error); }
+        }
+        public synchronized void onComplete() { if (!stopped) { stopped = true; delegate.onComplete(); } }
+    }
 
     private boolean isCoordinatorDataQuestion(ChatRequest req, List<ChatRequest.ChatMessageDto> history) {
         if (!"COORDINATOR".equals(req.getContext())) return false;
@@ -275,18 +362,7 @@ public class OpenAIService {
             throw unavailable();
         }
 
-        ArrayNode historyJson = mapper.createArrayNode();
-        if (history != null) {
-            history.forEach(item -> historyJson.add(message(item.getRole(), item.getContent())));
-        }
-
-        ObjectNode body = mapper.createObjectNode();
-        body.put("operation", operation);
-        body.put("model", model);
-        body.put("system", system);
-        body.put("message", userMessage);
-        body.set("history", historyJson);
-        body.put("maxTokens", maxTokens);
+        ObjectNode body = relayBody(operation, model, system, userMessage, history, maxTokens);
 
         HttpRequest request = HttpRequest.newBuilder(URI.create(n8nWebhookUrl))
                 .timeout(timeout)
@@ -305,6 +381,24 @@ public class OpenAIService {
             throw unavailable();
         }
         return content.asText();
+    }
+
+    private ObjectNode relayBody(String operation, String model, String system, String userMessage,
+                                 List<ChatRequest.ChatMessageDto> history, int maxTokens) {
+        ArrayNode historyJson = mapper.createArrayNode();
+        if (history != null) {
+            history.forEach(item -> historyJson.add(message(item.getRole(), item.getContent())));
+        }
+
+        ObjectNode body = mapper.createObjectNode();
+        body.put("operation", operation);
+        body.put("model", model);
+        body.put("system", system);
+        body.put("message", userMessage);
+        body.set("history", historyJson);
+        body.put("maxTokens", maxTokens);
+
+        return body;
     }
 
     private ResponseStatusException unavailable() {

@@ -171,6 +171,20 @@ class ChatContextDatabaseIT {
     }
 
     @Test
+    void versionTwoDraftGradesNeverEnterStudentCompanySupervisorOrCoordinatorChatAndLegacyDraftsStayCompatible() throws Exception {
+        jdbc.update("UPDATE submissions SET assessment_version=2 WHERE id=?",ownReport.getSubmission().getId());
+        for(User viewer:List.of(student,owner,supervisor,projectSupervisor,coordinator)) {
+            var snapshot=context.snapshot(viewer.getId());
+            assertFalse(evaluationIds(snapshot).contains(ownReport.getId()));
+            assertFalse(mapper.writeValueAsString(snapshot).contains("private-other-student-notes"));
+        }
+        assertTrue(evaluationIds(context.snapshot(coordinator.getId())).contains(hiddenReport.getId()),"Historical v1 drafts retain their existing contract");
+        jdbc.update("UPDATE evaluation_reports SET finalized=true WHERE id=?",ownReport.getId());
+        assertTrue(evaluationIds(context.snapshot(student.getId())).contains(ownReport.getId()));
+        assertTrue(evaluationIds(context.snapshot(owner.getId())).contains(ownReport.getId()));
+    }
+
+    @Test
     void exactCountsAndUpcomingQueryAreIndependentOfFiftyNewestSummariesWithStableTies() {
         new TransactionTemplate(transactions).executeWithoutResult(tx -> {
             for (int i = 0; i < 55; i++) project(owner, "Recent " + i, ProjectStatus.OPEN, null);

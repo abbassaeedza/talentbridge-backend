@@ -1,0 +1,9 @@
+[
+  { "name": "APP_QUESTIONNAIRE_ENABLED", "value": "false" },
+  { "name": "ASSESSMENT_TASKS_PROJECT", "value": "project-4343c1b3-d768-4b8f-bff" },
+  { "name": "ASSESSMENT_TASKS_LOCATION", "value": "asia-south1" },
+  { "name": "ASSESSMENT_TASKS_QUEUE", "value": "talentbridge-assessments" },
+  { "name": "ASSESSMENT_TASKS_TARGET", "value": "https://talentbridge-backend-5665rby4oa-el.a.run.app" },
+  { "name": "ASSESSMENT_TASKS_AUDIENCE", "value": "https://talentbridge-backend-5665rby4oa-el.a.run.app" },
+  { "name": "ASSESSMENT_TASKS_CALLER_EMAIL", "value": "talentbridge-assessment-tasks@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com" }
+]

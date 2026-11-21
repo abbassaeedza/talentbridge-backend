@@ -2,6 +2,7 @@ package com.talentbridge.config;
 import com.talentbridge.security.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.*;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -22,6 +23,13 @@ import java.util.List;
 public class SecurityConfig {
     private final JwtAuthenticationFilter jwtFilter;
     @Value("${app.frontend-url}") private String frontendUrl;
+
+    @Bean
+    FilterRegistrationBean<JwtAuthenticationFilter> jwtServletRegistration() {
+        var registration = new FilterRegistrationBean<>(jwtFilter);
+        registration.setEnabled(false);
+        return registration;
+    }
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {

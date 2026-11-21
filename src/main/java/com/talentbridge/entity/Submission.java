@@ -9,6 +9,8 @@ import java.util.List;
 @Entity @Table(name = "submissions")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class Submission extends BaseEntity {
+    @Version private long version;
+    @Builder.Default @Column(nullable = false) private int assessmentVersion = 1;
     @OneToOne(fetch = FetchType.LAZY) @JoinColumn(name = "party_id", nullable = false) private Party party;
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "project_id", nullable = false) private Project project;
     @Column(length = 500) private String repoUrl;

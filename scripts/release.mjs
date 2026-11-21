@@ -6,6 +6,15 @@ import { pathToFileURL } from 'node:url';
 
 const project = 'project-4343c1b3-d768-4b8f-bff', region = 'asia-south1', service = 'talentbridge-backend';
 const runtime = `talentbridge-runtime@${project}.iam.gserviceaccount.com`;
+const questionnaireValues = {
+  APP_QUESTIONNAIRE_ENABLED: 'false',
+  ASSESSMENT_TASKS_PROJECT: project,
+  ASSESSMENT_TASKS_LOCATION: region,
+  ASSESSMENT_TASKS_QUEUE: 'talentbridge-assessments',
+  ASSESSMENT_TASKS_TARGET: 'https://talentbridge-backend-5665rby4oa-el.a.run.app',
+  ASSESSMENT_TASKS_AUDIENCE: 'https://talentbridge-backend-5665rby4oa-el.a.run.app',
+  ASSESSMENT_TASKS_CALLER_EMAIL: `talentbridge-assessment-tasks@${project}.iam.gserviceaccount.com`,
+};
 const check = (ok, code) => { if (!ok) throw new Error(code); };
 const digest = value => /^sha256:[0-9a-f]{64}$/.test(value);
 const imageTypes = ['application/vnd.oci.image.manifest.v1+json', 'application/vnd.docker.distribution.manifest.v2+json'];
@@ -55,7 +64,25 @@ export function verifyConfig(template, pins) {
   check(!names.has('PORT') || env.find(e => e.name === 'PORT').value === '8080', 'RUNTIME_PORT');
 }
 
-function verifyRuntime(current, revision, before, options) {
+const validQuestionnaireEntry = entry => entry && Object.keys(entry).length === 2 && typeof entry.name === 'string' && Object.hasOwn(entry, 'value')
+  && Object.hasOwn(questionnaireValues, entry.name)
+  && (entry.name === 'APP_QUESTIONNAIRE_ENABLED'
+    ? ['false', 'true'].includes(entry.value) : entry.value === questionnaireValues[entry.name]);
+
+function verifyQuestionnaire(questionnaire) {
+  check(Array.isArray(questionnaire) && questionnaire.length === 7
+    && new Set(questionnaire.map(e => e?.name)).size === 7 && questionnaire.every(validQuestionnaireEntry), 'QUESTIONNAIRE_CONFIG');
+}
+
+export function releaseEnvironment(before, questionnaire) {
+  verifyQuestionnaire(questionnaire);
+  const env = before.spec.template.spec.containers[0].env ?? [];
+  check(new Set(env.map(e => e.name)).size === env.length, 'DUPLICATE_ENV');
+  check(env.filter(e => /^(APP_QUESTIONNAIRE_|ASSESSMENT_TASKS_)/.test(e.name)).every(validQuestionnaireEntry), 'QUESTIONNAIRE_CONFIG');
+  return structuredClone([...env.filter(e => !Object.hasOwn(questionnaireValues, e.name)), ...questionnaire]);
+}
+
+function verifyRuntime(current, revision, options) {
   const { pins, sha, image, digests, revision: expected } = options;
   ready(current); ready(revision);
   verifyConfig(revision, pins); verifyConfig(current.spec.template, pins);
@@ -74,12 +101,12 @@ function verifyRuntime(current, revision, before, options) {
   const accepted = digests.map(d => `${image}@${d}`);
   check(accepted.includes(revision.spec.containers[0].image) && accepted.includes(revision.status.imageDigest)
     && accepted.includes(current.spec.template.spec.containers[0].image), 'RUNTIME_IMAGE');
-  const original = sorted(before.spec.template.spec.containers[0].env);
-  check(sorted(revision.spec.containers[0].env) === original && sorted(current.spec.template.spec.containers[0].env) === original, 'CONFIG_DRIFT');
+  const expectedEnv = sorted(options.environment);
+  check(sorted(revision.spec.containers[0].env) === expectedEnv && sorted(current.spec.template.spec.containers[0].env) === expectedEnv, 'CONFIG_DRIFT');
 }
 
 export function verifyCandidate(current, revision, before, options) {
-  verifyRuntime(current, revision, before, options);
+  verifyRuntime(current, revision, options);
   for (const routes of [current.spec.traffic, current.status.traffic]) {
     check(sorted(traffic(routes)) === sorted(traffic(before.status.traffic)), 'CANDIDATE_TRAFFIC');
   }
@@ -90,7 +117,7 @@ export function verifyCandidate(current, revision, before, options) {
 }
 
 export function verifyPromotion(current, revision, before, options) {
-  verifyRuntime(current, revision, before, options);
+  verifyRuntime(current, revision, options);
   for (const routes of [current.spec.traffic, current.status.traffic]) {
     const positive = traffic(routes);
     check(positive.length === 1 && positive[0].revisionName === options.revision
@@ -114,9 +141,12 @@ async function release() {
   const gcloud = args => run('gcloud', [...args, `--project=${project}`, `--region=${region}`, '--quiet', '--format=json']);
   const describeService = () => JSON.parse(gcloud(['run', 'services', 'describe', service]));
   const describeRevision = () => JSON.parse(gcloud(['run', 'revisions', 'describe', revision]));
+  const questionnaire = JSON.parse(readFileSync(new URL('../deploy/questionnaire-env.json', import.meta.url)));
+  verifyQuestionnaire(questionnaire);
   const before = describeService();
   const pins = JSON.parse(readFileSync(new URL('../deploy/secret-pins.json', import.meta.url)));
   verifyConfig(before.spec.template, pins);
+  const environment = releaseEnvironment(before, questionnaire);
   const directory = mkdtempSync(join(temp, 'release-'));
   let attempted = false;
   try {
@@ -127,10 +157,11 @@ async function release() {
     const resolved = run('gcloud', ['artifacts', 'docker', 'images', 'describe', `${image}:${sha}`, `--project=${project}`, '--format=value(image_summary.digest)']);
     check(digest(built) && built === resolved, 'SOURCE_DIGEST');
     const manifest = JSON.parse(run('docker', ['buildx', 'imagetools', 'inspect', `${image}@${built}`, '--raw']));
-    const digests = resolveImage(built, resolved, manifest), options = { pins, sha, revision, tag, image, digests };
+    const digests = resolveImage(built, resolved, manifest), options = { pins, sha, revision, tag, image, digests, environment };
     console.log(`IMAGE_VERIFIED ${digests.join(' ')}`);
     attempted = true;
     gcloud(['run', 'deploy', service, `--image=${image}@${built}`, `--revision-suffix=${tag}`, `--tag=${tag}`, '--no-traffic',
+      `--update-env-vars=${questionnaire.map(e => `${e.name}=${e.value}`).join(',')}`,
       `--service-account=${runtime}`, `--labels=commit-sha=${sha}`, '--cpu=1', '--memory=1Gi', '--min=0', '--max=1',
       '--min-instances=0', '--max-instances=1', '--concurrency=40', '--timeout=120', '--port=8080', '--cpu-throttling', '--cpu-boost',
       '--startup-probe=httpGet.path=/api/health/startup,httpGet.port=8080,periodSeconds=5,timeoutSeconds=5,failureThreshold=48']);

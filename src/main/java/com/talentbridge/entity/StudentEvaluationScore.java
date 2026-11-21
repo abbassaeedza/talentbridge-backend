@@ -8,6 +8,8 @@ public class StudentEvaluationScore extends BaseEntity {
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "evaluation_report_id", nullable = false) private EvaluationReport evaluationReport;
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "student_id", nullable = false) private User student;
     private Integer totalCommits;
+    private String frozenStudentName;
+    @Column(length=100) private String frozenGithubLogin;
     private Integer linesAdded;
     private Integer linesDeleted;
     @Column(columnDefinition = "NUMERIC") private Double contributionPercentage;

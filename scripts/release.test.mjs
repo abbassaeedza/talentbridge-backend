@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { resolveImage, verifyConfig, verifyCandidate, verifyPromotion } from './release.mjs';
+import { resolveImage, verifyConfig, releaseEnvironment, verifyCandidate, verifyPromotion } from './release.mjs';
 
 const pins = JSON.parse(readFileSync(new URL('../deploy/secret-pins.json', import.meta.url)));
+const questionnaire = JSON.parse(readFileSync(new URL('../deploy/questionnaire-env.json', import.meta.url)));
 const sha = 'a'.repeat(40), index = `sha256:${'1'.repeat(64)}`, child = `sha256:${'2'.repeat(64)}`;
 const image = 'asia-south1-docker.pkg.dev/project-4343c1b3-d768-4b8f-bff/talentbridge/talentbridge-backend';
 const revision = 'talentbridge-backend-gaaaaaaaa-123-1', tag = 'gaaaaaaaa-123-1';
-const options = { pins, sha, revision, tag, image, digests: [index, child] };
 const aliases = (project = '1089736501943') => Object.values(pins)
   .map(({ secret }) => `${secret}:projects/${project}/secrets/${secret}`).join(',');
 const manifest = { schemaVersion: 2, mediaType: 'application/vnd.oci.image.index.v1+json', manifests: [
@@ -25,6 +28,7 @@ const template = () => ({ metadata: { annotations: {
     resources: { limits: { cpu: '1000m', memory: '1Gi' } },
     startupProbe: { httpGet: { path: '/api/health/startup', port: 8080 }, periodSeconds: 5, timeoutSeconds: 5, failureThreshold: 48 },
     env: [{ name: 'APP_SEED_RESET_DEMO_DATA', value: 'false' }, { name: 'FRONTEND_URL', value: 'https://example.test' },
+      { name: 'APP_DEMO_MODE', value: 'true' },
       ...Object.entries(pins).map(([name, pin]) => ({ name, valueFrom: { secretKeyRef: { name: pin.secret, key: pin.version } } }))],
   }],
 } });
@@ -33,12 +37,17 @@ const service = () => ({ metadata: { generation: 1, annotations: {
   'run.googleapis.com/minScale': '0', 'run.googleapis.com/maxScale': '1',
 } }, spec: { template: template(), traffic: [{ revisionName: 'previous', percent: 100 }] },
   status: { ...structuredClone(ready), traffic: [{ revisionName: 'previous', percent: 100 }] } });
-const candidate = () => ({ ...template(), metadata: { ...template().metadata, name: revision, generation: 1, labels: { 'commit-sha': sha } },
-  status: { ...structuredClone(ready), imageDigest: `${image}@${child}` } });
+const candidate = () => {
+  const value = { ...template(), metadata: { ...template().metadata, name: revision, generation: 1, labels: { 'commit-sha': sha } },
+    status: { ...structuredClone(ready), imageDigest: `${image}@${child}` } };
+  value.spec.containers[0].env.push(...structuredClone(questionnaire));
+  return value;
+};
 const tagged = () => {
   const value = service();
   value.spec.template.metadata.name = revision;
   value.spec.template.metadata.labels = { 'commit-sha': sha };
+  value.spec.template.spec.containers[0].env.push(...structuredClone(questionnaire));
   value.spec.traffic.push({ revisionName: revision, tag });
   value.status.traffic.push({ revisionName: revision, tag, url: 'https://candidate---service.a.run.app' });
   return value;
@@ -58,6 +67,194 @@ const promoted = () => {
   return value;
 };
 const rejects = (fn, code) => assert.throws(fn, error => error.message === code);
+const options = { pins, sha, revision, tag, image, digests: [index, child], environment: releaseEnvironment(service(), questionnaire) };
+
+function executeRelease(manifest, before, failCloudRead = false) {
+  const directory = mkdtempSync(join(tmpdir(), 'release-entry-test-'));
+  try {
+    const entry = new URL('./release.mjs', import.meta.url);
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import commands from 'node:child_process';
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    import { fileURLToPath } from 'node:url';
+    const events = [], entry = new URL(${JSON.stringify(entry.href)});
+    const read = fs.readFileSync;
+    fs.readFileSync = (file, ...args) => {
+      if (file instanceof URL && file.href === new URL('../deploy/questionnaire-env.json', entry).href) {
+        events.push('manifest');
+        return Buffer.from(${JSON.stringify(manifest)});
+      }
+      return read(file, ...args);
+    };
+    commands.execFileSync = (command, args) => {
+      events.push([command, ...args]);
+      if (command === 'git' && args.join(' ') === 'rev-parse HEAD') return ${JSON.stringify(sha)};
+      if (command === 'gcloud' && args.slice(0, 4).join(' ') === 'run services describe talentbridge-backend'
+          && !${JSON.stringify(failCloudRead)}) return ${JSON.stringify(JSON.stringify(before))};
+      throw new Error('OFFLINE_COMMAND_BOUNDARY');
+    };
+    syncBuiltinESMExports();
+    process.argv[1] = fileURLToPath(entry);
+    process.on('beforeExit', () => console.log(JSON.stringify(events)));
+    await import(entry.href);
+    `], { encoding: 'utf8', timeout: 5000, env: {
+      HOME: directory, TMPDIR: directory, RUNNER_TEMP: directory,
+      GITHUB_SHA: sha, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1',
+      GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'push',
+    } });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1);
+    assert.deepEqual(readdirSync(directory), []);
+    return { events: JSON.parse(result.stdout), error: result.stderr.trim() };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+    assert.equal(existsSync(directory), false);
+  }
+}
+
+test('actual release entry rejects malformed local manifest before any cloud command', () => {
+  const invalid = structuredClone(questionnaire);
+  invalid.find(e => e.name === 'APP_QUESTIONNAIRE_ENABLED').value = 'TRUE';
+  for (const [manifest, error] of [[JSON.stringify(invalid), 'QUESTIONNAIRE_CONFIG'], ['{', 'RELEASE_FAILED']]) {
+    const result = executeRelease(manifest, service(), true);
+    assert.equal(result.error, error, JSON.stringify(result.events));
+    assert(result.events.includes('manifest'));
+    assert.deepEqual(result.events.filter(e => Array.isArray(e) && e[0] !== 'git'), []);
+  }
+});
+
+test('actual release entry with valid manifest retains metadata and baseline guards', () => {
+  for (const [mutate, error, calls] of [
+    [() => {}, 'GCLOUD_FAILED', 2],
+    [s => s.spec.template.spec.serviceAccountName = 'wrong', 'RUNTIME_ACCOUNT', 1],
+    [s => s.spec.template.spec.containers[0].env.find(e => e.name === 'RESEND_API_KEY').valueFrom.secretKeyRef.key = '1', 'SECRET_PIN', 1],
+    [s => s.spec.template.spec.containers[0].env.push({ name: 'ASSESSMENT_TASKS_QUEUE', value: 'wrong' }), 'QUESTIONNAIRE_CONFIG', 1],
+  ]) {
+    const before = service(); mutate(before);
+    const result = executeRelease(JSON.stringify(questionnaire), before);
+    assert.equal(result.error, error, JSON.stringify(result.events));
+    assert.equal(result.events.filter(e => e === 'manifest').length, 1);
+    const cloud = result.events.filter(e => Array.isArray(e) && e[0] === 'gcloud');
+    assert.equal(cloud.length, calls);
+    assert.deepEqual(cloud[0].slice(0, 5), ['gcloud', 'run', 'services', 'describe', 'talentbridge-backend']);
+    assert(result.events.indexOf('manifest') < result.events.indexOf(cloud[0]));
+    if (calls === 2) assert.deepEqual(cloud[1], ['gcloud', 'auth', 'configure-docker', 'asia-south1-docker.pkg.dev', '--quiet']);
+  }
+});
+
+test('initial reviewed questionnaire environment must pass candidate and promotion without unrelated changes', () => {
+  assert.deepEqual(questionnaire.filter(e => e.name !== 'APP_QUESTIONNAIRE_ENABLED'), [
+    { name: 'ASSESSMENT_TASKS_PROJECT', value: 'project-4343c1b3-d768-4b8f-bff' },
+    { name: 'ASSESSMENT_TASKS_LOCATION', value: 'asia-south1' },
+    { name: 'ASSESSMENT_TASKS_QUEUE', value: 'talentbridge-assessments' },
+    { name: 'ASSESSMENT_TASKS_TARGET', value: 'https://talentbridge-backend-5665rby4oa-el.a.run.app' },
+    { name: 'ASSESSMENT_TASKS_AUDIENCE', value: 'https://talentbridge-backend-5665rby4oa-el.a.run.app' },
+    { name: 'ASSESSMENT_TASKS_CALLER_EMAIL', value: 'talentbridge-assessment-tasks@project-4343c1b3-d768-4b8f-bff.iam.gserviceaccount.com' },
+  ]);
+  assert(['false', 'true'].includes(questionnaire.find(e => e.name === 'APP_QUESTIONNAIRE_ENABLED').value));
+  assert.equal(Object.keys(pins).length, 11);
+  assert.equal(pins.RESEND_API_KEY.version, '2');
+  for (const verify of [verifyCandidate, verifyPromotion]) {
+    const current = verify === verifyCandidate ? tagged() : promoted(), actual = candidate();
+    verify(current, actual, service(), options);
+  }
+});
+
+for (const [previous, next] of [[undefined, 'false'], ['false', 'false'], ['false', 'true'], ['true', 'true']]) {
+  test(`reviewed release preserves exact environment for ${previous ?? 'absent'} to ${next}`, () => {
+    const before = service(), settings = structuredClone(questionnaire);
+    settings.find(e => e.name === 'APP_QUESTIONNAIRE_ENABLED').value = next;
+    if (previous !== undefined) {
+      const existing = structuredClone(questionnaire);
+      existing.find(e => e.name === 'APP_QUESTIONNAIRE_ENABLED').value = previous;
+      before.spec.template.spec.containers[0].env.push(...existing);
+    }
+    before.spec.template.spec.containers[0].env.push({ name: 'EXISTING_SETTING', value: 'preserve-me' });
+    const original = structuredClone(before), originalSettings = structuredClone(settings);
+    const environment = releaseEnvironment(before, settings);
+    assert.equal(environment.length, template().spec.containers[0].env.length + 8);
+    assert.deepEqual(environment.filter(e => !settings.some(s => s.name === e.name)),
+      before.spec.template.spec.containers[0].env.filter(e => !settings.some(s => s.name === e.name)));
+    assert.equal(environment.find(e => e.name === 'APP_QUESTIONNAIRE_ENABLED').value, next);
+    for (const verify of [verifyCandidate, verifyPromotion]) {
+      const current = verify === verifyCandidate ? tagged() : promoted(), actual = candidate();
+      current.spec.template.spec.containers[0].env = structuredClone(environment).reverse();
+      actual.spec.containers[0].env = structuredClone(environment);
+      verify(current, actual, before, { ...options, environment });
+    }
+    assert.deepEqual(before, original);
+    assert.deepEqual(settings, originalSettings);
+    environment[0].value = 'detached';
+    assert.deepEqual(before, original);
+  });
+}
+
+test('only the exact seven literal settings and two explicit flag values are accepted', () => {
+  for (const invalid of [undefined, null, {}, 'false', [], questionnaire.slice(1), [...questionnaire, questionnaire[0]],
+    questionnaire.map((e, i) => i === 1 ? questionnaire[0] : e),
+    ...['APP_QUESTIONNAIRE_OTHER', 'ASSESSMENT_TASKS_OTHER', 'OTHER', 'OTHER_API_KEY', 'N8N_WEBHOOK_SECRET']
+      .map(name => questionnaire.map((e, i) => i === 0 ? { name, value: 'DO_NOT_LOG_SENTINEL' } : e))]) {
+    rejects(() => releaseEnvironment(service(), invalid), 'QUESTIONNAIRE_CONFIG');
+  }
+  for (const setting of questionnaire) {
+    const values = setting.name === 'APP_QUESTIONNAIRE_ENABLED'
+      ? [true, false, 0, 1, 'TRUE', 'False', ' false', 'true\n', '']
+      : ['', null, false, 123, `${setting.value}/`, `${setting.value}\n`, `${setting.value},OTHER=value`, 'DO_NOT_LOG_SENTINEL'];
+    if (setting.name === 'ASSESSMENT_TASKS_TARGET' || setting.name === 'ASSESSMENT_TASKS_AUDIENCE') {
+      values.push(setting.value.replace('https:', 'http:'), `${setting.value}/internal/assessment-jobs`,
+        `${setting.value}?q=1`, `${setting.value}#fragment`, 'https://unreviewed.run.app');
+    }
+    for (const value of values) {
+      const invalid = questionnaire.map(e => e.name === setting.name ? { ...e, value } : e);
+      rejects(() => releaseEnvironment(service(), invalid), 'QUESTIONNAIRE_CONFIG');
+    }
+    for (const entry of [null, { name: setting.name }, { ...setting, name: [setting.name] },
+      { ...setting, name: { value: setting.name } }, { ...setting, extra: 'bad' },
+      { name: setting.name, valueFrom: { secretKeyRef: { name: 'DO_NOT_LOG_SENTINEL', key: '1' } } },
+      { ...setting, valueFrom: { secretKeyRef: { name: 'DO_NOT_LOG_SENTINEL', key: '1' } } }]) {
+      rejects(() => releaseEnvironment(service(), questionnaire.map(e => e.name === setting.name ? entry : e)), 'QUESTIONNAIRE_CONFIG');
+    }
+  }
+});
+
+test('predeployment questionnaire drift and duplicate environment names fail before deployment', () => {
+  for (const entry of [{ name: 'ASSESSMENT_TASKS_UNKNOWN', value: 'bad' },
+    { name: 'APP_QUESTIONNAIRE_ENABLED', value: 'TRUE' },
+    { name: 'ASSESSMENT_TASKS_QUEUE', value: 'other' },
+    { name: 'ASSESSMENT_TASKS_TARGET', valueFrom: { secretKeyRef: { name: 'bad', key: '1' } } }]) {
+    const before = service(); before.spec.template.spec.containers[0].env.push(entry);
+    rejects(() => releaseEnvironment(before, questionnaire), 'QUESTIONNAIRE_CONFIG');
+  }
+  const before = service(); before.spec.template.spec.containers[0].env.push(before.spec.template.spec.containers[0].env[0]);
+  rejects(() => releaseEnvironment(before, questionnaire), 'DUPLICATE_ENV');
+});
+
+test('candidate and promotion reject unrelated, questionnaire and secret drift in either actual environment', () => {
+  for (const verify of [verifyCandidate, verifyPromotion]) {
+    for (const target of ['template', 'revision']) {
+      for (const [mutate, code] of [
+        [env => env.push({ name: 'UNREVIEWED', value: 'value' }), 'CONFIG_DRIFT'],
+        [env => env.find(e => e.name === 'FRONTEND_URL').value = 'https://changed.test', 'CONFIG_DRIFT'],
+        [env => env.splice(env.findIndex(e => e.name === 'FRONTEND_URL'), 1), 'CONFIG_DRIFT'],
+        [env => env.find(e => e.name === 'APP_DEMO_MODE').value = 'false', 'CONFIG_DRIFT'],
+        [env => env.find(e => e.name === 'APP_QUESTIONNAIRE_ENABLED').value = questionnaire[0].value === 'false' ? 'true' : 'false', 'CONFIG_DRIFT'],
+        [env => env.splice(env.findIndex(e => e.name === 'ASSESSMENT_TASKS_QUEUE'), 1), 'CONFIG_DRIFT'],
+        [env => env.find(e => e.name === 'ASSESSMENT_TASKS_TARGET').value += '/internal/assessment-jobs', 'CONFIG_DRIFT'],
+        [env => env.push({ name: 'OTHER_API_KEY', value: 'DO_NOT_LOG_SENTINEL' }), 'SENSITIVE_ENV'],
+        [env => env.push(env[0]), 'DUPLICATE_ENV'],
+        [env => env.find(e => e.name === 'RESEND_API_KEY').valueFrom.secretKeyRef.key = '1', 'SECRET_PIN'],
+        [env => env.find(e => e.name === 'JWT_SECRET').valueFrom.secretKeyRef.name = 'other', 'SECRET_PIN'],
+        [env => env.find(e => e.name === 'DB_PASSWORD').value = 'DO_NOT_LOG_SENTINEL', 'SECRET_PIN'],
+        [env => env.splice(env.findIndex(e => e.name === 'N8N_WEBHOOK_SECRET'), 1), 'SECRET_PIN'],
+      ]) {
+        const current = verify === verifyCandidate ? tagged() : promoted(), actual = candidate();
+        mutate(target === 'template' ? current.spec.template.spec.containers[0].env : actual.spec.containers[0].env);
+        rejects(() => verify(current, actual, service(), options), code);
+      }
+    }
+  }
+});
 
 test('legacy max-20 baseline passes unchanged preflight and permits an exact repaired candidate and promotion', () => {
   const before = legacyService(), original = structuredClone(before);

@@ -5,7 +5,8 @@ import java.util.Optional;
 import java.util.UUID;
 public interface EvaluationReportRepository extends JpaRepository<EvaluationReport, UUID> {
     String CHAT_FROM = " FROM EvaluationReport e JOIN e.submission s JOIN s.party party JOIN s.project project ";
-    String CHAT_SCOPE = " WHERE " + SubmissionRepository.CHAT_INDIVIDUAL_SCOPE;
+    String CHAT_SCOPE = " WHERE " + SubmissionRepository.CHAT_INDIVIDUAL_SCOPE
+            + " AND (s.assessmentVersion = 1 OR e.finalized = true)";
     interface ChatEvaluation {
         UUID getId(); UUID getSubmissionId(); UUID getProjectId(); boolean getFinalized();
         java.time.LocalDateTime getEvaluatedAt(); Double getTotalScore(); Double getAiDetectionScore();

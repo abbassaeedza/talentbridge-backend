@@ -31,6 +31,9 @@ public class EvaluationService {
     public EvaluationReportResponse triggerEvaluation(UUID submissionId, UUID coordinatorId) {
         Submission submission = submissionRepository.findById(submissionId)
             .orElseThrow(() -> new ResourceNotFoundException("Submission", submissionId.toString()));
+        requireLegacy(submission);
+        if (submission.getStatus() == SubmissionStatus.DRAFT)
+            throw new BadRequestException("Only final submissions can be evaluated");
         User coordinator = userRepository.findById(coordinatorId)
             .orElseThrow(() -> new ResourceNotFoundException("User", coordinatorId.toString()));
         if (submission.getStatus() == SubmissionStatus.EVALUATED)
@@ -52,7 +55,7 @@ public class EvaluationService {
             project.getDeliverables(), contributors.stats());
 
         EvaluationReport report = parseAndPersist(aiJson, submission, coordinator, party, contributors.commitCounts());
-        party.getMembers().forEach(m -> scorecardService.addEntry(m, project, report));
+        party.getMembers().stream().sorted(Comparator.comparing(User::getId)).forEach(m -> scorecardService.addEntry(m, project, report));
 
         submission.setStatus(SubmissionStatus.EVALUATED);
         submissionRepository.save(submission);
@@ -65,6 +68,7 @@ public class EvaluationService {
     public EvaluationReportResponse finalizeReport(UUID reportId, UUID coordinatorId) {
         EvaluationReport report = evaluationReportRepository.findById(reportId)
             .orElseThrow(() -> new ResourceNotFoundException("EvaluationReport", reportId.toString()));
+        requireLegacy(report.getSubmission());
         if (report.isFinalized()) throw new BadRequestException("Already finalized");
         report.setFinalized(true);
         return EvaluationReportResponse.from(evaluationReportRepository.save(report));
@@ -79,6 +83,7 @@ public class EvaluationService {
         }
 
         Submission submission = report.getSubmission();
+        requireLegacy(submission);
         Party party = submission.getParty();
         String token = party.getLeader().getGithubAccessToken();
         GitHubService.ContributorData contributors =
@@ -89,16 +94,22 @@ public class EvaluationService {
         report.setEvaluatedAt(LocalDateTime.now());
         EvaluationReport saved = evaluationReportRepository.save(report);
 
-        party.getMembers().forEach(member ->
+        party.getMembers().stream().sorted(Comparator.comparing(User::getId)).forEach(member ->
                 scorecardService.addEntry(member, submission.getProject(), saved));
         notificationService.notifyEvaluationComplete(party, saved);
         log.info("Evaluation contributions refreshed. Score: {}", saved.getTotalScore());
         return EvaluationReportResponse.from(saved);
     }
 
+    private static void requireLegacy(Submission submission) {
+        if (submission.getAssessmentVersion() != 1)
+            throw new BadRequestException("Questionnaire assessment requires asynchronous evaluation");
+    }
+
     @Transactional(readOnly = true)
     public Optional<EvaluationReportResponse> getBySubmissionId(UUID submissionId, UUID viewerId) {
         return evaluationReportRepository.findBySubmissionId(submissionId).map(report -> {
+            requireLegacy(report.getSubmission());
             User viewer = userRepository.findById(viewerId)
                     .orElseThrow(() -> new ResourceNotFoundException("User", viewerId.toString()));
             Submission submission = report.getSubmission();
@@ -139,8 +150,8 @@ public class EvaluationService {
             report.setStudentScores(buildStudentScores(report, party, commitMap));
             return evaluationReportRepository.save(report);
         } catch (Exception e) {
-            log.error("Failed to parse AI evaluation: {}", aiJson, e);
-            throw new RuntimeException("Could not parse evaluation response: " + e.getMessage(), e);
+            log.error("EVALUATION_RESPONSE_INVALID");
+            throw new RuntimeException("EVALUATION_RESPONSE_INVALID");
         }
     }
 
