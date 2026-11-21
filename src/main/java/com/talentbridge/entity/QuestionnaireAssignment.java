@@ -27,6 +27,7 @@ public class QuestionnaireAssignment extends BaseEntity {
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 30)
     @Builder.Default @JsonIgnore private QuestionnaireGradeState gradeState = QuestionnaireGradeState.PENDING;
     @JsonIgnore private Long gradedRevision;
+    @JsonIgnore private Long lockedAnswerRevision;
     @JsonIgnore private Integer aiScore;
     @JsonIgnore private Integer effectiveScore;
 }

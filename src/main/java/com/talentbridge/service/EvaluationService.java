@@ -32,6 +32,8 @@ public class EvaluationService {
         Submission submission = submissionRepository.findById(submissionId)
             .orElseThrow(() -> new ResourceNotFoundException("Submission", submissionId.toString()));
         requireLegacy(submission);
+        if (submission.getStatus() == SubmissionStatus.DRAFT)
+            throw new BadRequestException("Only final submissions can be evaluated");
         User coordinator = userRepository.findById(coordinatorId)
             .orElseThrow(() -> new ResourceNotFoundException("User", coordinatorId.toString()));
         if (submission.getStatus() == SubmissionStatus.EVALUATED)
@@ -53,7 +55,7 @@ public class EvaluationService {
             project.getDeliverables(), contributors.stats());
 
         EvaluationReport report = parseAndPersist(aiJson, submission, coordinator, party, contributors.commitCounts());
-        party.getMembers().forEach(m -> scorecardService.addEntry(m, project, report));
+        party.getMembers().stream().sorted(Comparator.comparing(User::getId)).forEach(m -> scorecardService.addEntry(m, project, report));
 
         submission.setStatus(SubmissionStatus.EVALUATED);
         submissionRepository.save(submission);
@@ -92,7 +94,7 @@ public class EvaluationService {
         report.setEvaluatedAt(LocalDateTime.now());
         EvaluationReport saved = evaluationReportRepository.save(report);
 
-        party.getMembers().forEach(member ->
+        party.getMembers().stream().sorted(Comparator.comparing(User::getId)).forEach(member ->
                 scorecardService.addEntry(member, submission.getProject(), saved));
         notificationService.notifyEvaluationComplete(party, saved);
         log.info("Evaluation contributions refreshed. Score: {}", saved.getTotalScore());
@@ -107,6 +109,7 @@ public class EvaluationService {
     @Transactional(readOnly = true)
     public Optional<EvaluationReportResponse> getBySubmissionId(UUID submissionId, UUID viewerId) {
         return evaluationReportRepository.findBySubmissionId(submissionId).map(report -> {
+            requireLegacy(report.getSubmission());
             User viewer = userRepository.findById(viewerId)
                     .orElseThrow(() -> new ResourceNotFoundException("User", viewerId.toString()));
             Submission submission = report.getSubmission();
@@ -147,8 +150,8 @@ public class EvaluationService {
             report.setStudentScores(buildStudentScores(report, party, commitMap));
             return evaluationReportRepository.save(report);
         } catch (Exception e) {
-            log.error("Failed to parse AI evaluation: {}", aiJson, e);
-            throw new RuntimeException("Could not parse evaluation response: " + e.getMessage(), e);
+            log.error("EVALUATION_RESPONSE_INVALID");
+            throw new RuntimeException("EVALUATION_RESPONSE_INVALID");
         }
     }
 

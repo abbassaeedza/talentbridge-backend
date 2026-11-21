@@ -107,6 +107,7 @@ public class QuestionnaireGenerationService {
         if (job.getKind()==QuestionnaireJobKind.GENERATE_MEMBER && job.getQuestionIds().isEmpty())
             job.setQuestionIds(java.util.stream.IntStream.range(0,5).mapToObj(i -> UUID.randomUUID()).toList());
         Work work=new Work(); work.id=id; work.snapshotId=snapshot.getId(); work.lease=job.getLeaseToken();
+        work.attemptsAtClaim=job.getAttempts();
         work.kind=job.getKind(); work.brief=snapshot.getFrozenBrief(); work.questionIds=List.copyOf(job.getQuestionIds());
         try {
             if (work.kind==QuestionnaireJobKind.EVIDENCE) {
@@ -192,7 +193,7 @@ public class QuestionnaireGenerationService {
         QuestionnaireJob job=lockedJob(work.id);
         if (!work.lease.equals(job.getLeaseToken())) throw busy();
         finishAttempt(job,"FAILED",code); clearLease(job); job.setLastErrorCode(code);
-        if (work.kind==QuestionnaireJobKind.EVIDENCE || job.getAttempts()==0 || job.getAttempts()>=3) failed(job,code);
+        if (work.kind==QuestionnaireJobKind.EVIDENCE || job.getAttempts()<=work.attemptsAtClaim || job.getAttempts()>=3) failed(job,code);
         else { job.setStatus(QuestionnaireJobStatus.PENDING); job.setNextAttemptAt(clock.instant().plusSeconds(30));
             job.setDispatchGeneration(job.getDispatchGeneration()+1); }
     }
@@ -245,7 +246,7 @@ public class QuestionnaireGenerationService {
             if (active==null) {
                 var previous=history.stream().filter(j -> j.getStatus()==QuestionnaireJobStatus.FAILED).reduce((a,b)->b).orElseThrow(QuestionnaireGenerationService::notFound);
                 active=jobs.save(QuestionnaireJob.builder().snapshot(snapshot).kind(previous.getKind()).assignment(previous.getAssignment())
-                        .jobKey(id+":recovery:"+UUID.randomUUID()).retryOf(previous.getId()).nextAttemptAt(clock.instant()).build());
+                        .jobKey(id+":recovery:"+UUID.randomUUID()).retryOf(previous.getId()).questionIds(List.copyOf(previous.getQuestionIds())).nextAttemptAt(clock.instant()).build());
                 snapshot.setState(QuestionnaireState.GENERATING);
             } else {
                 active.setDispatchGeneration(active.getDispatchGeneration()+1);
@@ -281,6 +282,7 @@ public class QuestionnaireGenerationService {
     }
     private static final class Work {
         UUID id,snapshotId,lease,studentId;
+        int attemptsAtClaim;
         QuestionnaireJobKind kind; String brief,token;
         GitHubEvidence.Resolution resolution; GitHubEvidence evidence;
         List<UUID> questionIds; List<String> prior;

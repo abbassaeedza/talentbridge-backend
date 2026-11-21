@@ -250,4 +250,134 @@ class AssessmentAIServiceTest {
         assertThrows(AssessmentException.class, () -> service.evaluateRepository(repository));
         reply.set(repositoryEvaluation().toString()); assertThrows(AssessmentException.class, () -> service.evaluateQuestionnaire(questionnaire));
     }
+
+    GitHubEvidence maximumEvidence(boolean quotedPaths) {
+        var files=new ArrayList<FileEvidence>();
+        for(int i=0;i<8;i++) files.add(new FileEvidence(Kind.SOURCE,
+                quotedPaths && i<4?"src/"+i+"\"".repeat(502)+".java":"src/Source"+i+".java",
+                "c".repeat(40),"d".repeat(64),4000,1,1,1,"s".repeat(4000),false));
+        files.add(new FileEvidence(Kind.README,"README.md","c".repeat(40),"d".repeat(64),4000,1,1,1,"r".repeat(4000),false));
+        for(int i=0;i<8;i++) files.add(new FileEvidence(Kind.CONFIG,"module"+i+"/package.json","c".repeat(40),"d".repeat(64),1000,1,1,1,"c".repeat(1000),false));
+        return new GitHubEvidence(evidence().resolution(),Instant.EPOCH,List.of(),files,
+                new ContributorSnapshot(Instant.EPOCH,false,true,java.util.stream.IntStream.range(0,100)
+                        .mapToObj(i->new Contributor("contributor"+i,1)).toList()),List.of(),
+                new Bounds(16,32000,32000,4000,8,1000,128,8192,65536,262144,2097152,100));
+    }
+
+    List<MemberAnswers> maximumMembers(GitHubEvidence evidence,String text,int count) {
+        var refs=evidence.files().stream().filter(f->f.kind()==Kind.SOURCE).limit(4)
+                .map(f->new SourceReference(f.path(),1,1)).toList();
+        return java.util.stream.IntStream.range(0,count).mapToObj(i->new MemberAnswers(new UUID(0,i+1),
+                java.util.stream.IntStream.range(0,5).mapToObj(q->new Answer(new UUID(i+1,q+1),
+                        String.valueOf((char)('A'+i*5+q)).repeat(1500),"R".repeat(2000),refs,text)).toList())).toList();
+    }
+
+    @Test void realJacksonMaximumThreeMemberPayloadOverflowsThenPartitionsLosslessly() {
+        var evidence=maximumEvidence(false); var members=maximumMembers(evidence,"x".repeat(2000),3);
+        for(int i=0;i<3;i++) service.prepareGeneration("Synthetic project",evidence,members.get(i).memberId(),
+                members.get(i).questions().stream().map(Answer::id).toList(),
+                members.subList(0,i).stream().flatMap(m->m.questions().stream()).map(Answer::prompt).toList());
+        assertEquals("INPUT_TOO_LARGE",assertThrows(AssessmentException.class,
+                ()->service.prepareQuestionnaireEvaluation("Synthetic project",evidence,members)).getMessage());
+        var batches=service.prepareQuestionnaireBatches("Synthetic project",evidence,members);
+        assertEquals(List.of(8,7),batches.stream().map(b->b.stream().mapToInt(m->m.questions().size()).sum()).toList());
+        assertEquals(members.stream().flatMap(m->m.questions().stream()).toList(),
+                batches.stream().flatMap(List::stream).flatMap(m->m.questions().stream()).toList());
+        verifyNoInteractions(quota); assertEquals(0,calls.get());
+        for(var batch:batches) {
+            var body=mapper.createObjectNode(); var ms=body.putArray("members");
+            for(var m:batch) {var qs=ms.addObject().put("memberId",m.memberId().toString()).putArray("questions");
+                for(var q:m.questions()) qs.addObject().put("id",q.id().toString()).put("mark",20).put("feedback","Evidence-backed");}
+            reply.set(body.toString());
+            service.evaluateQuestionnaire(service.prepareQuestionnaireBatch("Synthetic project",evidence,batch),()->{});
+            var payload=assertDoesNotThrow(()->mapper.readTree(request.get().path("message").textValue()));
+            assertEquals(17,payload.path("files").size()); assertEquals(100,payload.path("contributorSnapshot").path("counts").size());
+            assertEquals(mapper.valueToTree(batch),payload.path("completeMembers"));
+            assertTrue(request.get().path("system").textValue().length()+request.get().path("message").textValue().length()<=96000);
+        }
+    }
+
+    @Test void atomicTupleFitsPublishedBaseBudgetEvenWithWorstAllowedEscaping() {
+        var input=capturePreparations();
+        var evidence=maximumEvidence(true);
+        String brief="b".repeat(6000);
+        var single=maximumMembers(evidence,"\"".repeat(2000),1).get(0);
+        var atomic=new MemberAnswers(single.memberId(),List.of(new Answer(single.questions().get(0).id(),
+                "\t".repeat(1499)+"P","\\".repeat(2000),single.questions().get(0).sourceReferences(),"\"".repeat(2000))));
+        service.prepareGeneration(brief,evidence,single.memberId(),single.questions().stream().map(Answer::id).toList(),List.of());
+        int initial=input.get().get(0).length()+input.get().get(1).length();
+        brief+="b".repeat(63999-initial);
+        service.prepareGeneration(brief,evidence,single.memberId(),single.questions().stream().map(Answer::id).toList(),List.of());
+        assertEquals(63999,input.get().get(0).length()+input.get().get(1).length());
+        var base=(ObjectNode)assertDoesNotThrow(()->mapper.readTree(input.get().get(1)));
+        base.remove(List.of("memberId","questionIds","priorPrompts"));
+        int baseLength=base.toString().length();assertTrue(baseLength<64000);
+        String boundedBrief=brief;
+        assertDoesNotThrow(()->service.prepareQuestionnaireBatch(boundedBrief,evidence,List.of(atomic)));
+        int system=input.get().get(0).length();int serialized=input.get().get(1).length();
+        assertTrue(system<=2048);assertTrue(assertDoesNotThrow(()->mapper.writeValueAsString(atomic.questions().get(0).sourceReferences())).length()<=4800);
+        assertTrue(serialized+system<=baseLength+2048+2*5500+4800+512);
+        assertTrue(serialized+system<96000);
+        var privateBase=(ObjectNode)assertDoesNotThrow(()->mapper.readTree(input.get().get(1)));
+        privateBase.remove(List.of("assessmentKind","completeMembers"));assertEquals(base,privateBase);
+        verifyNoInteractions(quota); assertEquals(0,calls.get());
+    }
+
+    AtomicReference<List<String>> capturePreparations() {
+        transport=spy(transport);var captured=new AtomicReference<List<String>>();
+        doAnswer(c->{captured.set(List.of(c.getArgument(1),c.getArgument(2)));return c.callRealMethod();})
+                .when(transport).prepareAssessment(anyString(),anyString(),anyString());
+        service=new AssessmentAIService(mapper,transport,quota,new GitHubEvidenceService(mapper));return captured;
+    }
+
+    @ParameterizedTest @ValueSource(strings={"\"","\\","\t","\n","\r","اردو","e\u0301","🧪"})
+    void allowedPlainTextAtExactlyTwoThousandUnitsSurvivesSerializationUnchanged(String unit) {
+        String text=unit.repeat(2000/unit.length());if(text.isBlank()) text="X"+text.substring(1);
+        var members=maximumMembers(evidence(),text,1);String expected=text;var input=capturePreparations();
+        assertDoesNotThrow(()->service.prepareQuestionnaireEvaluation("Brief",evidence(),members));
+        var payload=assertDoesNotThrow(()->mapper.readTree(input.get().get(1)));
+        assertEquals(expected,payload.path("completeMembers").get(0).path("questions").get(0).path("answer").textValue());
+        assertEquals(2000,expected.length());verifyNoInteractions(quota);assertEquals(0,calls.get());
+    }
+
+    @ParameterizedTest @ValueSource(strings={"missing","extra","duplicate","fraction","wrongMember"})
+    void privateSubsetResponseMustMatchItsOwnExactIds(String mutation) {
+        var member=maximumMembers(evidence(),"Saved answer",1).get(0);
+        var subset=List.of(new MemberAnswers(member.memberId(),member.questions().subList(0,2)));
+        var prepared=service.prepareQuestionnaireBatch("Brief",evidence(),subset);
+        var body=mapper.createObjectNode();var m=body.putArray("members").addObject().put("memberId",member.memberId().toString());var qs=m.putArray("questions");
+        for(var q:subset.get(0).questions()) qs.addObject().put("id",q.id().toString()).put("mark",20).put("feedback","Evidence-backed");
+        switch(mutation) {
+            case "missing"->qs.remove(1);
+            case "extra"->qs.addObject().put("id",member.questions().get(2).id().toString()).put("mark",20).put("feedback","Evidence-backed");
+            case "duplicate"->qs.set(1,qs.get(0).deepCopy());
+            case "fraction"->((ObjectNode)qs.get(0)).put("mark",1.5);
+            case "wrongMember"->m.put("memberId",UUID.randomUUID().toString());
+        }
+        reply.set(body.toString());assertEquals("INVALID_RESPONSE",assertThrows(AssessmentException.class,()->service.evaluateQuestionnaire(prepared)).getMessage());
+    }
+
+    @Test void wholeTeamFirstAndGlobalValidationCannotBeBypassedBySplitting() {
+        var normal=maximumMembers(evidence(),"Urdu اردو 🧪 e\u0301\t\n\r \\u0001",2);
+        assertEquals(List.of(normal),service.prepareQuestionnaireBatches("Brief",evidence(),normal));
+        var bad=new ArrayList<>(normal); bad.set(1,new MemberAnswers(normal.get(1).memberId(),normal.get(0).questions()));
+        assertEquals("INVALID_INPUT",assertThrows(AssessmentException.class,
+                ()->service.prepareQuestionnaireBatches("Brief",evidence(),bad)).getMessage());
+        ReflectionTestUtils.setField(transport,"n8nWebhookUrl","");
+        assertEquals("INVALID_RELAY_CONFIGURATION",assertThrows(AssessmentException.class,
+                ()->service.prepareQuestionnaireBatches("Brief",evidence(),normal)).getMessage());
+        verifyNoInteractions(quota); assertEquals(0,calls.get());
+    }
+
+    @ParameterizedTest @ValueSource(ints={0,1,2,3,4,5,6,7,8,11,12,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31})
+    void unsupportedPlainTextControlsCannotReachGenerationOrPrivateTransport(int control) {
+        var body=generation(); ((ObjectNode)body.path("questions").get(0)).put("rubric","Bad"+(char)control);
+        reply.set(body.toString()); assertEquals("INVALID_RESPONSE",assertThrows(AssessmentException.class,
+                ()->service.generate(prepared())).getMessage());
+        int before=calls.get(); clearInvocations(quota);
+        var members=maximumMembers(evidence(),"Bad"+(char)control,1);
+        assertEquals("INVALID_INPUT",assertThrows(AssessmentException.class,
+                ()->service.prepareQuestionnaireBatches("Brief",evidence(),members)).getMessage());
+        verifyNoInteractions(quota); assertEquals(before,calls.get());
+    }
 }

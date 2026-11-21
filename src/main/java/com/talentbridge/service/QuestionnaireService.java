@@ -11,7 +11,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.*;
@@ -60,7 +59,7 @@ public class QuestionnaireService {
                     || answer.text() == null || answer.text().length() > 2000
                     || answers.putIfAbsent(answer.questionId().toString(), answer.text()) != null)
                 throw error(HttpStatus.BAD_REQUEST, "Answers require five distinct assigned question IDs and text of at most 2000 characters");
-            if (answer.text().indexOf('\0') >= 0 || !StandardCharsets.UTF_8.newEncoder().canEncode(answer.text()))
+            if (!AssessmentAIService.supportedPlainText(answer.text()))
                 throw error(HttpStatus.BAD_REQUEST, "Answer text contains unsupported Unicode");
         }
         a.setAnswers(answers);

@@ -2,6 +2,7 @@ package com.talentbridge.entity;
 import jakarta.persistence.*;
 import lombok.*;
 import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -20,6 +21,10 @@ public class EvaluationReport extends BaseEntity {
     @Column(columnDefinition = "NUMERIC") private Double teamCollaborationScore;
     @Column(columnDefinition = "TEXT") private String teamCollaborationNotes;
     @Column(columnDefinition = "NUMERIC") private Double totalScore;
+    @Column(columnDefinition = "NUMERIC") private Double repositoryScore;
+    @Column(columnDefinition = "NUMERIC") private Double questionnaireScore;
+    private Instant contributorCapturedAt;
+    private Boolean contributorsTruncated;
     @Column(columnDefinition = "TEXT") private String overallSummary;
     @OneToMany(mappedBy = "evaluationReport", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default private List<StudentEvaluationScore> studentScores = new ArrayList<>();

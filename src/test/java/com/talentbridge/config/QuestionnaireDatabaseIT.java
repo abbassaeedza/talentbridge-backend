@@ -148,7 +148,8 @@ class QuestionnaireDatabaseIT {
     }
 
     @ParameterizedTest(name = "HTTP unsupported Unicode case {index} preserves the saved set")
-    @ValueSource(strings = {"synthetic\0", "synthetic\uD800", "synthetic\uDC00", "synthetic\uDC00\uD800"})
+    @ValueSource(strings = {"synthetic\0", "synthetic\uD800", "synthetic\uDC00", "synthetic\uDC00\uD800",
+            "synthetic\u0001", "synthetic\u0008", "synthetic\u000b", "synthetic\u000c", "synthetic\u000e", "synthetic\u001f"})
     void httpRejectsUnsupportedUnicodeWithoutChangingSavedSet(String invalid) throws Exception {
         service.save(assignment, owner, request("Previously saved", 0));
         var entries = new ArrayList<>(request("Replacement", 1).answers());
@@ -170,7 +171,7 @@ class QuestionnaireDatabaseIT {
 
     @Test
     void httpRoundTripsValidEmojiAndOrdinaryUnicodeUnchanged() throws Exception {
-        String text = "  \uD83D\uDE80 \uD83D\uDE00 \u0627\u0631\u062F\u0648 e\u0301\n\t\u0001  ";
+        String text = "  \uD83D\uDE80 \uD83D\uDE00 \u0627\u0631\u062F\u0648 e\u0301\n\t\r\\u0001  ";
         var mapper = JsonMapper.builder().enable(JsonWriteFeature.ESCAPE_NON_ASCII).build();
         var result = http().perform(put("/api/questionnaires/{id}/answers", assignment)
                 .contentType("application/json").content(mapper.writeValueAsString(request(text, 0)))).andReturn();

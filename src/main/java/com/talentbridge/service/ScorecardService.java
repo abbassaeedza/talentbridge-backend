@@ -6,6 +6,7 @@ import com.talentbridge.repository.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import java.util.UUID;
 
@@ -14,6 +15,7 @@ import java.util.UUID;
 @Slf4j
 public class ScorecardService {
     private final ScorecardRepository scorecardRepository;
+    private final JdbcTemplate jdbc;
 
     @Transactional(readOnly = true)
     public ScorecardResponse getByStudentId(UUID studentId) {
@@ -24,6 +26,8 @@ public class ScorecardService {
 
     @Transactional
     public void addEntry(User student, Project project, EvaluationReport report) {
+        // Every publisher must serialize before loading the derived rollup, including legacy refreshes.
+        jdbc.queryForObject("SELECT id FROM users WHERE id=? FOR UPDATE",UUID.class,student.getId());
         Scorecard sc = scorecardRepository.findByStudentId(student.getId())
             .orElseGet(() -> scorecardRepository.save(
                 Scorecard.builder().student(student).averageScore(0.0).totalProjects(0).build()));
@@ -33,8 +37,12 @@ public class ScorecardService {
             .mapToDouble(StudentEvaluationScore::getIndividualScore).findFirst()
             .orElse(report.getTotalScore() != null ? report.getTotalScore() : 0.0);
 
+        boolean versionTwo=report.getSubmission()!=null && report.getSubmission().getAssessmentVersion()==2;
         ScorecardEntry entry = sc.getEntries().stream()
-                .filter(existing -> existing.getProject().getId().equals(project.getId()))
+                .filter(existing -> versionTwo
+                        ? existing.getEvaluationReport()!=null && report.getId().equals(existing.getEvaluationReport().getId())
+                        : existing.getProject().getId().equals(project.getId()) && (existing.getEvaluationReport()==null
+                            || existing.getEvaluationReport().getSubmission()==null || existing.getEvaluationReport().getSubmission().getAssessmentVersion()==1))
                 .findFirst()
                 .orElseGet(() -> {
                     ScorecardEntry created = ScorecardEntry.builder()

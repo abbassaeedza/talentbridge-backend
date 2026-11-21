@@ -7,6 +7,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import java.time.Instant;
+import java.util.Map;
 import java.util.List;
 import java.util.UUID;
 
@@ -17,6 +19,11 @@ import java.util.UUID;
 public class EvaluationReportResponse {
     private UUID id;
     private UUID submissionId;
+    private int assessmentVersion;
+    private Double repositoryScore;
+    private Double questionnaireScore;
+    private Map<String,Double> effectiveWeights;
+    private ContributorCoverage contributorCoverage;
     private Double aiDetectionScore;
     private String aiDetectionNotes;
     private Double codeQualityScore;
@@ -34,9 +41,15 @@ public class EvaluationReportResponse {
     private boolean finalized;
 
     public static EvaluationReportResponse from(EvaluationReport report) {
-        return EvaluationReportResponse.builder()
+        boolean v2=report.getSubmission()!=null && report.getSubmission().getAssessmentVersion()==2;
+        var response=EvaluationReportResponse.builder()
                 .id(report.getId())
                 .submissionId(report.getSubmission() != null ? report.getSubmission().getId() : null)
+                .assessmentVersion(v2?2:1)
+                .repositoryScore(v2?display(report.getRepositoryScore()):null)
+                .questionnaireScore(v2?display(report.getQuestionnaireScore()):null)
+                .effectiveWeights(v2?Map.of("authenticity",15.0,"quality",18.75,"functionality",18.75,"scope",15.0,"collaboration",7.5,"questionnaire",25.0):null)
+                .contributorCoverage(v2?new ContributorCoverage(report.getContributorCapturedAt(),100,Boolean.TRUE.equals(report.getContributorsTruncated()),false):null)
                 .aiDetectionScore(report.getAiDetectionScore())
                 .aiDetectionNotes(report.getAiDetectionNotes())
                 .codeQualityScore(report.getCodeQualityScore())
@@ -54,21 +67,29 @@ public class EvaluationReportResponse {
                                 .id(score.getId())
                                 .student(UserSummary.builder()
                                         .id(score.getStudent().getId())
-                                        .firstName(score.getStudent().getFirstName())
-                                        .lastName(score.getStudent().getLastName())
-                                        .email(score.getStudent().getEmail())
-                                        .githubUsername(score.getStudent().getGithubUsername())
+                                        .firstName(v2?score.getFrozenStudentName():score.getStudent().getFirstName())
+                                        .lastName(v2?"":score.getStudent().getLastName())
+                                        .email(v2?null:score.getStudent().getEmail())
+                                        .githubUsername(v2?score.getFrozenGithubLogin():score.getStudent().getGithubUsername())
                                         .build())
                                 .totalCommits(score.getTotalCommits())
-                                .contributionPercentage(score.getContributionPercentage())
-                                .individualScore(score.getIndividualScore())
+                                .contributionPercentage(v2?display(score.getContributionPercentage()):score.getContributionPercentage())
+                                .individualScore(v2?display(score.getIndividualScore()):score.getIndividualScore())
                                 .performanceNotes(score.getPerformanceNotes())
                                 .build())
                         .toList())
                 .evaluatedAt(report.getEvaluatedAt())
                 .finalized(report.isFinalized())
                 .build();
+        if(v2) {
+            response.setAiDetectionScore(display(response.getAiDetectionScore())); response.setCodeQualityScore(display(response.getCodeQualityScore()));
+            response.setFunctionalityScore(display(response.getFunctionalityScore()));response.setScopeAlignmentScore(display(response.getScopeAlignmentScore()));
+            response.setTeamCollaborationScore(display(response.getTeamCollaborationScore()));response.setTotalScore(display(response.getTotalScore()));
+        }
+        return response;
     }
+    private static Double display(Double value){return value==null?null:Math.round(value*10.0)/10.0;}
+    public record ContributorCoverage(Instant capturedAt,int limit,boolean truncated,boolean commitPinned){}
 
     @Data
     @Builder

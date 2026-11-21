@@ -246,7 +246,7 @@ class QuestionnaireServiceTest {
     @Test
     void preservesValidUnicodeWithoutRewriting() {
         ownWrite();
-        String text = "  \uD83D\uDE80 \uD83D\uDE00 \u0627\u0631\u062F\u0648 e\u0301\n\t\u0001  ";
+        String text = "  \uD83D\uDE80 \uD83D\uDE00 \u0627\u0631\u062F\u0648 e\u0301\n\t\r\\u0001  ";
         var response = service.save(assignment.getId(), student, answers(text, 0));
         assertEquals(5, response.answeredCount());
         assertTrue(assignment.getAnswers().values().stream().allMatch(text::equals));

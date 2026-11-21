@@ -124,6 +124,44 @@ class AssessmentOidcVerifierTest {
         verify(response,never()).body();
     }
 
+    @Test void exactCertificateByteLimitCompletesWithoutCancellingTheActualSubscriber() throws Exception {
+        HttpClient client=mock(); var subscription=mock(Flow.Subscription.class);
+        byte[] expected=new byte[262144]; Arrays.fill(expected,0,131072,(byte)3); Arrays.fill(expected,131072,expected.length,(byte)9);
+        streamCertificates(client,subscription,false);
+        var response=new GoogleCertificateTransport(client,Duration.ofMillis(80))
+                .buildRequest("GET","https://www.googleapis.com/oauth2/v3/certs").execute();
+        assertEquals(200,response.getStatusCode()); assertEquals(expected.length,response.getContentLength());
+        assertArrayEquals(expected,response.getContent().readAllBytes());
+        verify(subscription,never()).cancel();
+        verify(client,times(1)).sendAsync(any(HttpRequest.class),org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<byte[]>>any());
+    }
+
+    @Test void certificateByteLimitPlusOneCancelsAndFailsWithoutPartialContentOrCause() {
+        HttpClient client=mock(); var subscription=mock(Flow.Subscription.class);
+        streamCertificates(client,subscription,true);
+        var failure=assertThrows(java.io.IOException.class,()->new GoogleCertificateTransport(client,Duration.ofMillis(80))
+                .buildRequest("GET","https://www.googleapis.com/oauth2/v3/certs").execute());
+        assertEquals("GOOGLE_CERTIFICATES_UNAVAILABLE",failure.getMessage()); assertNull(failure.getCause());
+        verify(subscription,times(1)).cancel();
+        verify(client,times(1)).sendAsync(any(HttpRequest.class),org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<byte[]>>any());
+    }
+
+    void streamCertificates(HttpClient client,Flow.Subscription subscription,boolean overflow) {
+        when(client.sendAsync(any(HttpRequest.class),org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<byte[]>>any())).thenAnswer(call->{
+            HttpResponse.BodyHandler<byte[]> handler=call.getArgument(1);
+            var subscriber=handler.apply(mock(HttpResponse.ResponseInfo.class)); subscriber.onSubscribe(subscription);
+            byte[] offset=new byte[131073]; Arrays.fill(offset,(byte)3); offset[0]=7;
+            byte[] second=new byte[131072]; Arrays.fill(second,(byte)9);
+            subscriber.onNext(List.of(java.nio.ByteBuffer.wrap(offset,1,131072)));
+            subscriber.onNext(List.of(java.nio.ByteBuffer.wrap(second)));
+            if(overflow) subscriber.onNext(List.of(java.nio.ByteBuffer.wrap(new byte[]{11})));
+            else subscriber.onComplete();
+            return subscriber.getBody().toCompletableFuture().thenApply(bytes->{
+                HttpResponse<byte[]> response=mock(); when(response.statusCode()).thenReturn(200); when(response.body()).thenReturn(bytes); return response;
+            });
+        });
+    }
+
     String tokenWithout(String missing) {
         var claims=new HashMap<String,Object>(Map.of("iss","https://accounts.google.com","aud",audience,"exp",now.plusSeconds(60).getEpochSecond(),"email",email,"email_verified",true));
         claims.remove(missing); return Jwts.builder().setClaims(claims).signWith(key.getPrivate(),SignatureAlgorithm.RS256).compact();

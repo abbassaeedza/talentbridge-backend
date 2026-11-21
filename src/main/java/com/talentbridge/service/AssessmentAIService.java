@@ -41,7 +41,7 @@ public class AssessmentAIService {
     private static final String QUESTIONNAIRE_EVALUATION = POLICY + """
             Return {"members":[{"memberId":"supplied UUID","questions":[{"id":"supplied question UUID",
             "mark":0,"feedback":"bounded feedback"}]}]}.
-            Return exactly the supplied complete members and all five questions per member once, integer marks 0..20,
+            Return exactly the supplied members and supplied question IDs per member once, integer marks 0..20,
             feedback 1..2000 characters. Grade against the private rubric, saved answer and actual evidence.
             Never invent incomplete-member grades. Never return repository scores or notes in this private result.
             """;
@@ -108,7 +108,7 @@ public class AssessmentAIService {
                                                  List<UUID> questionIds, List<String> priorPrompts) {
         require(memberId != null && questionIds != null && questionIds.size()==5 && questionIds.stream().noneMatch(Objects::isNull)
                 && new HashSet<>(questionIds).size()==5 && priorPrompts != null, "INVALID_INPUT");
-        priorPrompts.forEach(p -> validText(p, 20, 1500, "INVALID_INPUT"));
+        priorPrompts.forEach(p -> validPlainText(p, 20, 1500, "INVALID_INPUT"));
         ObjectNode data = input(approvedBrief, evidence);
         data.put("memberId", memberId.toString()); data.set("questionIds", json.valueToTree(questionIds));
         data.set("priorPrompts", json.valueToTree(priorPrompts));
@@ -123,22 +123,65 @@ public class AssessmentAIService {
     }
 
     public PreparedQuestionnaireEvaluation prepareQuestionnaireEvaluation(String approvedBrief, GitHubEvidence evidence, List<MemberAnswers> completeMembers) {
+        validateMembers(evidence,completeMembers,true);
+        return prepareQuestionnaireBatch(approvedBrief,evidence,completeMembers);
+    }
+
+    public PreparedQuestionnaireEvaluation prepareQuestionnaireBatch(String approvedBrief, GitHubEvidence evidence, List<MemberAnswers> completeMembers) {
+        var expected=validateMembers(evidence,completeMembers,false);
+        ObjectNode data=input(approvedBrief,evidence);
+        data.put("assessmentKind","questionnaire"); data.set("completeMembers",json.valueToTree(completeMembers));
+        return new PreparedQuestionnaireEvaluation(transport.prepareAssessment("questionnaire_evaluation",QUESTIONNAIRE_EVALUATION,data.toString()),expected);
+    }
+
+    public List<List<MemberAnswers>> prepareQuestionnaireBatches(String brief,GitHubEvidence evidence,List<MemberAnswers> members) {
+        validateMembers(evidence,members,true);
+        try {
+            prepareQuestionnaireEvaluation(brief,evidence,members);
+            return List.of(List.copyOf(members));
+        } catch (AssessmentException failure) {
+            if (!"INPUT_TOO_LARGE".equals(failure.getMessage())) throw failure;
+        }
+        List<List<MemberAnswers>> batches=new ArrayList<>();
+        List<MemberAnswers> prefix=new ArrayList<>();
+        for (var member:members) for(var question:member.questions()) {
+            var candidate=append(prefix,member.memberId(),question);
+            try {
+                prepareQuestionnaireBatch(brief,evidence,candidate); prefix=candidate;
+            } catch (AssessmentException failure) {
+                if (!"INPUT_TOO_LARGE".equals(failure.getMessage()) || prefix.isEmpty()) throw failure;
+                batches.add(List.copyOf(prefix)); prefix=append(List.of(),member.memberId(),question);
+                prepareQuestionnaireBatch(brief,evidence,prefix);
+            }
+        }
+        if (!prefix.isEmpty()) batches.add(List.copyOf(prefix));
+        return List.copyOf(batches);
+    }
+
+    private static List<MemberAnswers> append(List<MemberAnswers> prefix,UUID member,Answer question) {
+        var result=new ArrayList<>(prefix);
+        if (!result.isEmpty() && result.get(result.size()-1).memberId().equals(member)) {
+            var prior=result.remove(result.size()-1); var questions=new ArrayList<>(prior.questions()); questions.add(question);
+            result.add(new MemberAnswers(member,questions));
+        } else result.add(new MemberAnswers(member,List.of(question)));
+        return result;
+    }
+
+    private Map<UUID,Set<UUID>> validateMembers(GitHubEvidence evidence,List<MemberAnswers> completeMembers,boolean whole) {
         require(completeMembers != null && !completeMembers.isEmpty(), "INVALID_INPUT");
-        ObjectNode data = input(approvedBrief, evidence);
-        data.put("assessmentKind","questionnaire");
         Map<UUID, Set<UUID>> expected = new LinkedHashMap<>(); Set<UUID> allIds = new HashSet<>();
         for (MemberAnswers member : completeMembers) {
-            require(member != null && member.memberId()!=null && member.questions().size()==5 && !expected.containsKey(member.memberId()), "INVALID_INPUT");
+            require(member != null && member.memberId()!=null && member.questions().size()>0 && member.questions().size()<=5
+                    && (!whole || member.questions().size()==5) && !expected.containsKey(member.memberId()), "INVALID_INPUT");
             Set<UUID> ids = new HashSet<>();
             for (Answer answer : member.questions()) {
                 require(answer != null && answer.id()!=null && ids.add(answer.id()) && allIds.add(answer.id()), "INVALID_INPUT");
-                validText(answer.prompt(),20,1500,"INVALID_INPUT"); validText(answer.rubric(),1,2000,"INVALID_INPUT");
-                validText(answer.answer(),1,2000,"INVALID_INPUT"); validateReferences(evidence, answer.sourceReferences(), "INVALID_INPUT");
+                validPlainText(answer.prompt(),20,1500,"INVALID_INPUT"); validPlainText(answer.rubric(),1,2000,"INVALID_INPUT");
+                validPlainText(answer.answer(),1,2000,"INVALID_INPUT"); validateReferences(evidence, answer.sourceReferences(), "INVALID_INPUT");
             }
             expected.put(member.memberId(), Set.copyOf(ids));
         }
-        data.set("completeMembers", json.valueToTree(completeMembers));
-        return new PreparedQuestionnaireEvaluation(transport.prepareAssessment("questionnaire_evaluation", QUESTIONNAIRE_EVALUATION, data.toString()), expected);
+        return expected;
     }
 
     public GeneratedQuestions generate(PreparedGeneration prepared) {
@@ -157,6 +200,7 @@ public class AssessmentAIService {
             shape(q,"id","prompt","rubric","sourceReferences"); UUID id=id(q.get("id"));
             require(prepared.ids.contains(id) && seen.add(id), "INVALID_RESPONSE");
             String prompt=text(q.get("prompt"),20,1500); String rubric=text(q.get("rubric"),1,2000);
+            validPlainText(prompt,20,1500,"INVALID_RESPONSE"); validPlainText(rubric,1,2000,"INVALID_RESPONSE");
             require(prompts.stream().noneMatch(p -> similar(p,prompt)), "INVALID_RESPONSE"); prompts.add(prompt);
             JsonNode refs=q.get("sourceReferences"); require(refs.isArray() && refs.size()>=1 && refs.size()<=4,"INVALID_RESPONSE");
             List<SourceReference> safe=new ArrayList<>();
@@ -171,7 +215,11 @@ public class AssessmentAIService {
     }
 
     public RepositoryEvaluation evaluateRepository(PreparedRepositoryEvaluation prepared) {
-        require(prepared != null,"INVALID_INPUT"); JsonNode result=call(prepared.request);
+        return evaluateRepository(prepared,()->{});
+    }
+
+    public RepositoryEvaluation evaluateRepository(PreparedRepositoryEvaluation prepared,Runnable beforeAttempt) {
+        require(prepared != null,"INVALID_INPUT"); JsonNode result=call(prepared.request,beforeAttempt);
         shape(result,"repository"); JsonNode repo=result.get("repository"); shape(repo,CATEGORIES.toArray(String[]::new));
         Map<String,CategoryScore> scores=new LinkedHashMap<>();
         for (String key : CATEGORIES) {
@@ -183,12 +231,16 @@ public class AssessmentAIService {
     }
 
     public QuestionnaireEvaluation evaluateQuestionnaire(PreparedQuestionnaireEvaluation prepared) {
-        require(prepared != null,"INVALID_INPUT"); JsonNode result=call(prepared.request);
+        return evaluateQuestionnaire(prepared,()->{});
+    }
+
+    public QuestionnaireEvaluation evaluateQuestionnaire(PreparedQuestionnaireEvaluation prepared,Runnable beforeAttempt) {
+        require(prepared != null,"INVALID_INPUT"); JsonNode result=call(prepared.request,beforeAttempt);
         shape(result,"members");
         array(result.get("members"),prepared.ids.size()); List<MemberMarks> members=new ArrayList<>(); Set<UUID> seen=new HashSet<>();
         for (JsonNode m : result.get("members")) {
             shape(m,"memberId","questions"); UUID member=id(m.get("memberId"));
-            require(prepared.ids.containsKey(member) && seen.add(member),"INVALID_RESPONSE"); array(m.get("questions"),5);
+            require(prepared.ids.containsKey(member) && seen.add(member),"INVALID_RESPONSE"); array(m.get("questions"),prepared.ids.get(member).size());
             List<QuestionMark> marks=new ArrayList<>(); Set<UUID> seenQuestions=new HashSet<>();
             for (JsonNode q : m.get("questions")) {
                 shape(q,"id","mark","feedback"); UUID id=id(q.get("id"));
@@ -238,6 +290,13 @@ public class AssessmentAIService {
     static void validText(String value,int min,int max,String code) {
         require(value!=null && value.length()>=min && value.length()<=max && !value.isBlank()
                 && value.indexOf('\0')<0 && StandardCharsets.UTF_8.newEncoder().canEncode(value),code);
+    }
+    static boolean supportedPlainText(String value) {
+        return value!=null && StandardCharsets.UTF_8.newEncoder().canEncode(value)
+                && value.chars().noneMatch(c->c<32 && c!='\t' && c!='\n' && c!='\r');
+    }
+    static void validPlainText(String value,int min,int max,String code) {
+        validText(value,min,max,code); require(supportedPlainText(value),code);
     }
     private static String text(JsonNode node,int min,int max) {
         require(node!=null && node.isTextual(),"INVALID_RESPONSE"); String value=node.textValue(); validText(value,min,max,"INVALID_RESPONSE"); return value;

@@ -132,6 +132,19 @@ class QuestionnaireControllerTest {
         }
     }
 
+    @Test
+    void unsupportedPlainTextControlsAreRejectedThroughHttpBeforeMutation() throws Exception {
+        authenticate(owner, UserRole.STUDENT, UserStatus.APPROVED);
+        when(assignments.findOwnedForUpdate(id, owner)).thenReturn(Optional.of(assignment));
+        for (char control : new char[]{1, 8, 11, 12, 14, 31}) {
+            mvc.perform(put("/api/questionnaires/{id}/answers", id).header("Authorization", "Bearer token")
+                    .contentType("application/json").content(body("Saved code" + control, 0)))
+                    .andExpect(status().isBadRequest());
+            org.junit.jupiter.api.Assertions.assertTrue(assignment.getAnswers().isEmpty());
+        }
+        verify(assignments, never()).saveAndFlush(any());
+    }
+
     private String body(String text, long revision) throws Exception {
         return mapper.writeValueAsString(Map.of("expectedRevision", revision, "answers", assignment.getQuestions().stream()
                 .map(q -> Map.of("questionId", q.getId(), "text", text)).toList()));

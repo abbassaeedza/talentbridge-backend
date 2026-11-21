@@ -26,6 +26,7 @@ public class QuestionnaireFinalSubmissionService {
     private final QuestionnaireSnapshotRepository snapshots;
     private final QuestionnaireAssignmentRepository assignments;
     private final QuestionnaireJobRepository jobs;
+    private final NotificationRepository notifications;
     private final GitHubEvidenceService github;
     private final QuestionnaireGenerationService generation;
     private final ObjectMapper json;
@@ -36,11 +37,12 @@ public class QuestionnaireFinalSubmissionService {
 
     public QuestionnaireFinalSubmissionService(SubmissionService legacy, SubmissionRepository submissions,
             PartyRepository parties, ProjectRepository projects, QuestionnaireSnapshotRepository snapshots,
-            QuestionnaireAssignmentRepository assignments, QuestionnaireJobRepository jobs, GitHubEvidenceService github,
+            QuestionnaireAssignmentRepository assignments, QuestionnaireJobRepository jobs, NotificationRepository notifications, GitHubEvidenceService github,
             QuestionnaireGenerationService generation, ObjectMapper json, Clock clock, JdbcTemplate jdbc, PlatformTransactionManager manager,
             @Value("${app.questionnaire-enabled:false}") boolean enabled) {
         this.legacy=legacy; this.submissions=submissions; this.parties=parties; this.projects=projects;
         this.snapshots=snapshots; this.assignments=assignments; this.jobs=jobs; this.github=github;
+        this.notifications=notifications;
         this.generation=generation; this.json=json; this.clock=clock; this.jdbc=jdbc; this.enabled=enabled;
         tx=new TransactionTemplate(manager); tx.setTimeout(5);
     }
@@ -87,6 +89,12 @@ public class QuestionnaireFinalSubmissionService {
             sub.setAssessmentVersion(2); sub.setStatus(SubmissionStatus.SUBMITTED);
             sub.setSubmittedAt(LocalDateTime.ofInstant(clock.instant(),ZoneOffset.UTC));
             party.setStatus(PartyStatus.SUBMITTED);
+            for (User supervisor : Arrays.asList(party.getSupervisor(),project.getProjectSupervisor())) {
+                if (supervisor!=null) notifications.save(Notification.builder().recipient(supervisor)
+                        .type(NotificationType.SUBMISSION_RECEIVED).title("Party Submitted")
+                        .message(party.getName()+" has submitted their final project.")
+                        .referenceId(party.getId().toString()).referenceType("PARTY").build());
+            }
             submissions.saveAndFlush(sub);
             return new Accepted(SubmissionService.toResponse(sub),job.getId());
         });
