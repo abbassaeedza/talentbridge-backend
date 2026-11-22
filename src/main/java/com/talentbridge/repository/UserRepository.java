@@ -16,6 +16,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 public interface UserRepository extends JpaRepository<User, UUID> {
+    @Query("SELECT u.githubAccessToken FROM User u WHERE u.id = :id")
+    Optional<String> findGithubAccessTokenById(@Param("id") UUID id);
+
     @Query("SELECT u.role, COUNT(u) FROM User u GROUP BY u.role")
     List<Object[]> countByRoleGrouped();
 
