@@ -112,7 +112,7 @@ public class QuestionnaireGenerationService {
         try {
             if (work.kind==QuestionnaireJobKind.EVIDENCE) {
                 work.resolution=json.treeToValue(snapshot.getFrozenResolution(),GitHubEvidence.Resolution.class);
-                work.token=users.findById(snapshot.getFrozenLeaderId()).map(User::getGithubAccessToken).orElse(null);
+                work.token=users.findGithubAccessTokenById(snapshot.getFrozenLeaderId()).orElse(null);
             } else {
                 work.studentId=job.getAssignment().getStudentId();
                 work.evidence=json.treeToValue(evidence.findBySnapshotId(snapshot.getId()).orElseThrow().getEvidence(),GitHubEvidence.class);

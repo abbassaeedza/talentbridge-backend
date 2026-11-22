@@ -5,6 +5,8 @@ import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import java.security.*;
 import java.time.*;
 import java.util.*;
@@ -104,12 +106,29 @@ class AssessmentOidcVerifierTest {
             long start=System.nanoTime();
             assertFalse(new AssessmentOidcVerifier(audience,email,Clock.fixed(now,ZoneOffset.UTC),google).verify(token(Map.of(),key.getPrivate(),true)));
             assertTrue(headersSeen.get(),"The body, not connection setup, must be stalled");
-            // JDK HttpClient may complete exceptionally with nested cancellation instead of isCancelled().
-            var cancelled=assertThrows(CompletionException.class,()->actual.get().join());
-            assertInstanceOf(CancellationException.class,cancelled.getCause());
+            assertFutureCancelled(actual.get());
             assertTrue(Duration.ofNanos(System.nanoTime()-start).toMillis()<1500);
             verify(boundary,times(1)).sendAsync(any(HttpRequest.class),org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<byte[]>>any());
         } finally { release.countDown(); server.stop(0); }
+    }
+
+    @ParameterizedTest @ValueSource(booleans={false,true})
+    void cancellationAssertionAcceptsDirectAndDependentFutureCancellation(boolean dependent) {
+        var source=new CompletableFuture<Void>();
+        var observed=dependent?source.thenApply(value->value):source;
+        assertTrue(source.cancel(true));
+        if(dependent) {
+            var failure=assertThrows(CompletionException.class,observed::join);
+            assertInstanceOf(CancellationException.class,failure.getCause());
+        } else assertThrows(CancellationException.class,observed::join);
+        assertFutureCancelled(observed);
+    }
+
+    void assertFutureCancelled(CompletableFuture<?> future) {
+        assertTrue(future.isCompletedExceptionally());
+        Throwable cancelled=future.handle((response,failure)->failure).join();
+        if(cancelled instanceof CompletionException) cancelled=cancelled.getCause();
+        assertInstanceOf(CancellationException.class,cancelled);
     }
 
     @Test void failedGoogleCertificateStatusIsFailClosedWithoutRetryBackoffOrRawBodyExposure() {

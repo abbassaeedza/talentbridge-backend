@@ -30,6 +30,8 @@ import static org.mockito.ArgumentMatchers.*;
         "jwt.expiration-ms=60000", "jwt.refresh-expiration-ms=120000", "app.questionnaire-enabled=true"})
 class QuestionnaireGenerationDatabaseIT {
     @Autowired QuestionnaireGenerationService worker;
+    @Autowired QuestionnaireEvaluationService evaluation;
+    @Autowired ProfileFetchProbe profileFetchProbe;
     @Autowired QuestionnaireFinalSubmissionService finals;
     @Autowired SubmissionService drafts;
     @Autowired QuestionnaireService owners;
@@ -180,6 +182,54 @@ class QuestionnaireGenerationDatabaseIT {
         assertEquals(1,saved.getVersion());
         assertEquals(409, assertThrows(ResponseStatusException.class, () -> finals.finalSubmit(party,leader,0L)).getStatusCode().value());
         verifyNoInteractions(github);
+    }
+
+    @ParameterizedTest @ValueSource(strings={"present","null","missing"})
+    void evidenceHttpClaimAvoidsProfileHydrationAndPreservesCredentialSemantics(String credential) throws Exception {
+        String token=credential.equals("present")?"synthetic-evidence-credential":null;
+        jdbc.update("UPDATE users SET github_access_token=? WHERE id=?",token,leader);
+        finals.finalSubmit(party,leader,0L); UUID job=activeJob();
+        if(credential.equals("missing")) jdbc.update("UPDATE questionnaire_snapshots SET frozen_leader_id=? WHERE id=?",UUID.randomUUID(),snapshot().getId());
+        var frozen=snapshot().getFrozenResolution().deepCopy();
+        var assignmentIds=assignments.findAllBySnapshotId(snapshot().getId()).stream().map(QuestionnaireAssignment::getId).sorted().toList();
+        var quota=jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1");
+        var captured=new GitHubEvidence(resolution,now,List.of(),List.of(),new GitHubEvidence.ContributorSnapshot(now,false,false,List.of()),List.of(),
+                new GitHubEvidence.Bounds(16,32000,0,4000,8,1000,128,8192,65536,262144,2097152,100));
+        var calls=new java.util.concurrent.atomic.AtomicInteger();
+        when(github.capture(eq(resolution),anyString(),any())).thenAnswer(call->{
+            assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+            assertTrue(Objects.equals(token,call.getArgument(2)),"Credential read changed null/present semantics");
+            calls.incrementAndGet(); return captured;
+        });
+        int status;
+        profileFetchProbe.start();
+        try {
+            status=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(
+                    new com.talentbridge.controller.AssessmentJobController(worker,evaluation))
+                    .setControllerAdvice(new com.talentbridge.exception.GlobalExceptionHandler()).build()
+                    .perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/internal/assessment-jobs/{id}",job)
+                            .contentType("application/json").content("{\"jobId\":\""+job+"\"}"))
+                    .andReturn().getResponse().getStatus();
+        } finally { profileFetchProbe.active=false; }
+        var persisted=jobs.findById(job).orElseThrow();
+        System.out.println("EVIDENCE_CLAIM_REPRO credentialCase="+credential+" status="+status+" profileTables="+profileFetchProbe.tables
+                +" delayed="+profileFetchProbe.delayed.get()+" jobState="+persisted.getStatus()+" attempts="+persisted.getAttempts());
+        if(status==500) {
+            assertEquals(QuestionnaireJobStatus.DISPATCHED,persisted.getStatus());
+            assertNull(persisted.getLeaseToken()); assertNull(persisted.getLeaseUntil()); assertNull(persisted.getLastErrorCode());
+            assertEquals(0,calls.get());
+        }
+        assertEquals(0,persisted.getAttempts());
+        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM questionnaire_job_attempts WHERE job_id=?",Integer.class,job));
+        assertTrue(quota.equals(jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1")),"Evidence delivery changed quota");
+        assertTrue(frozen.equals(snapshot().getFrozenResolution()),"Evidence delivery changed the frozen resolution");
+        assertEquals(assignmentIds,assignments.findAllBySnapshotId(snapshot().getId()).stream().map(QuestionnaireAssignment::getId).sorted().toList());
+        verifyNoInteractions(ai);
+        assertEquals(204,status);
+        assertTrue(profileFetchProbe.tables.isEmpty(),"A scalar credential read must not hydrate profile associations");
+        assertEquals(1,calls.get()); assertEquals(QuestionnaireJobStatus.SUCCEEDED,persisted.getStatus());
+        assertNull(persisted.getLeaseToken()); assertNull(persisted.getLeaseUntil());
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM questionnaire_evidence WHERE snapshot_id=?",Integer.class,snapshot().getId()));
     }
 
     @Test void freezesExactAcceptanceInputsAndRetainsOwnerAccessWithoutMembership() {
@@ -367,7 +417,7 @@ class QuestionnaireGenerationDatabaseIT {
     }
 
     void httpDeliver(UUID id) throws Exception {
-        var controller=new com.talentbridge.controller.AssessmentJobController(worker,mock(QuestionnaireEvaluationService.class));
+        var controller=new com.talentbridge.controller.AssessmentJobController(worker,evaluation);
         org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(new com.talentbridge.exception.GlobalExceptionHandler()).build()
                 .perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/internal/assessment-jobs/{id}",id)
                         .contentType("application/json").content("{\"jobId\":\""+id+"\"}"))
@@ -532,8 +582,31 @@ class QuestionnaireGenerationDatabaseIT {
         final AtomicReference<Instant> value=new AtomicReference<>(); void set(Instant time){value.set(time);}
         public ZoneId getZone(){return ZoneOffset.UTC;} public Clock withZone(ZoneId zone){return this;} public Instant instant(){return value.get();}
     }
-    @Configuration @Import({SubmissionService.class,QuestionnaireFinalSubmissionService.class,QuestionnaireGenerationService.class,QuestionnaireService.class})
+    static class ProfileFetchProbe implements org.springframework.beans.factory.config.BeanPostProcessor,org.hibernate.resource.jdbc.spi.StatementInspector {
+        volatile boolean active;
+        final Set<String> tables=ConcurrentHashMap.newKeySet();
+        final java.util.concurrent.atomic.AtomicBoolean delayed=new java.util.concurrent.atomic.AtomicBoolean();
+        void start(){tables.clear();delayed.set(false);active=true;}
+        @Override public Object postProcessBeforeInitialization(Object bean,String name) {
+            if(bean instanceof org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean factory)
+                factory.getJpaPropertyMap().put("hibernate.session_factory.statement_inspector",this);
+            return bean;
+        }
+        @Override public String inspect(String sql) {
+            if(!active || !sql.contains("_profiles") || !StackWalker.getInstance().walk(frames->frames.anyMatch(frame->
+                    frame.getClassName().equals(QuestionnaireGenerationService.class.getName()) && frame.getMethodName().equals("claim")))) return sql;
+            for(String table:List.of("company_profiles","student_profiles","supervisor_profiles")) if(sql.contains(table)) tables.add(table);
+            // Expire the existing two-second claim budget before Hibernate prepares the unnecessary profile fetch.
+            if(delayed.compareAndSet(false,true)) try { Thread.sleep(2100); }
+            catch(InterruptedException failure){Thread.currentThread().interrupt();throw new IllegalStateException("Synthetic profile latency interrupted");}
+            return sql;
+        }
+    }
+
+    @Configuration @Import({SubmissionService.class,QuestionnaireFinalSubmissionService.class,QuestionnaireGenerationService.class,QuestionnaireService.class,
+            QuestionnaireEvaluationService.class,ScorecardService.class})
     static class Config {
+        @Bean static ProfileFetchProbe profileFetchProbe(){return new ProfileFetchProbe();}
         @Bean MutableClock clock(){return new MutableClock();}
         @Bean ObjectMapper mapper(){return new ObjectMapper().findAndRegisterModules();}
         @Bean AssessmentTaskQueue queue(){return mock(AssessmentTaskQueue.class);}
