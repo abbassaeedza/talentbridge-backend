@@ -22,6 +22,7 @@ import java.util.stream.IntStream;
 public class QuestionnaireGenerationService {
     private static final int TRANSACTION_TIMEOUT_SECONDS = 2;
     private static final int RETRY_TRANSACTION_TIMEOUT_SECONDS = 5;
+    private static final int RESULT_TRANSACTION_TIMEOUT_SECONDS = 5;
     private static final String JAVA_WHITESPACE = IntStream.rangeClosed(0,Character.MAX_CODE_POINT)
             .filter(Character::isWhitespace).collect(StringBuilder::new,StringBuilder::appendCodePoint,StringBuilder::append).toString();
     private final QuestionnaireSnapshotRepository snapshots;
@@ -29,7 +30,6 @@ public class QuestionnaireGenerationService {
     private final QuestionnaireEvidenceRepository evidence;
     private final QuestionnaireJobRepository jobs;
     private final UserRepository users;
-    private final NotificationRepository notifications;
     private final GitHubEvidenceService github;
     private final AssessmentAIService ai;
     private final AssessmentTaskQueue queue;
@@ -86,12 +86,12 @@ public class QuestionnaireGenerationService {
                         transaction(() -> { leased(work); return null; });
                         GitHubEvidence captured=github.capture(inputs.resolution,work.brief,inputs.token);
                         var resolution=inputs.resolution;
-                        transaction(() -> { finishEvidence(work,resolution,captured); return null; });
+                        transaction(RESULT_TRANSACTION_TIMEOUT_SECONDS,() -> { finishEvidence(work,resolution,captured); return null; });
                     } else {
                         var prepared=ai.prepareGeneration(work.brief,inputs.evidence,work.studentId,work.questionIds,inputs.prior);
                         transaction(() -> { leased(work); return null; });
                         var result=ai.generate(prepared,() -> transaction(() -> { startAttempt(work); return null; }));
-                        transaction(() -> { finishGeneration(work,result); return null; });
+                        transaction(RESULT_TRANSACTION_TIMEOUT_SECONDS,() -> { finishGeneration(work,result); return null; });
                     }
                 } catch (AssessmentQuotaService.QuotaExceeded quota) {
                     transaction(() -> { defer(work,quota.resetAt()); return null; });
@@ -158,7 +158,7 @@ public class QuestionnaireGenerationService {
     private void finishEvidence(Work work,GitHubEvidence.Resolution resolution,GitHubEvidence captured) {
         QuestionnaireJob job=leased(work); QuestionnaireSnapshot snapshot=job.getSnapshot();
         if (captured==null || !resolution.equals(captured.resolution())) throw new IllegalStateException("INVALID_EVIDENCE");
-        if (evidence.findBySnapshotId(snapshot.getId()).isEmpty()) evidence.save(QuestionnaireEvidence.builder()
+        if (!evidence.existsBySnapshotId(snapshot.getId())) evidence.save(QuestionnaireEvidence.builder()
                 .snapshot(snapshot).repositoryUrl(captured.resolution().repository().url())
                 .repositoryBranch(captured.resolution().resolvedBranch()).commitSha(captured.resolution().commitSha())
                 .capturedAt(captured.capturedAt()).evidence(json.valueToTree(captured)).build());
@@ -166,33 +166,39 @@ public class QuestionnaireGenerationService {
     }
 
     private void finishGeneration(Work work,AssessmentAIService.GeneratedQuestions result) {
-        QuestionnaireJob job=leased(work); QuestionnaireAssignment assignment=job.getAssignment();
-        if (questionCount(assignment.getId())==0) {
+        QuestionnaireJob job=leased(work); UUID assignmentId=job.getAssignment().getId();
+        if (jdbc.queryForObject("SELECT count(*) FROM questionnaire_questions WHERE assignment_id=?",Integer.class,assignmentId)==0) {
             if (result==null || !work.studentId.equals(result.memberId()) || result.questions().size()!=5
                     || !new HashSet<>(work.questionIds).equals(result.questions().stream().map(AssessmentAIService.Question::id).collect(java.util.stream.Collectors.toSet())))
                 throw new IllegalStateException("INVALID_GENERATION_RESULT");
             int position=0;
+            List<Object[]> rows=new ArrayList<>();
             for (var q : result.questions()) {
                 try {
-                    jdbc.update("INSERT INTO questionnaire_questions(id,assignment_id,position,prompt,hidden_rubric,source_references) VALUES (?,?,?,?,?,?::jsonb)",
-                            q.id(),assignment.getId(),++position,q.prompt(),q.rubric(),json.writeValueAsString(q.sourceReferences()));
+                    rows.add(new Object[]{q.id(),assignmentId,++position,q.prompt(),q.rubric(),json.writeValueAsString(q.sourceReferences())});
                 } catch (com.fasterxml.jackson.core.JsonProcessingException failure) { throw new IllegalStateException("INVALID_GENERATION_RESULT"); }
             }
+            jdbc.batchUpdate("INSERT INTO questionnaire_questions(id,assignment_id,position,prompt,hidden_rubric,source_references) VALUES (?,?,?,?,?,?::jsonb)",rows);
         }
         finishAttempt(job,"SUCCEEDED",null); succeeded(job); nextMemberOrPublish(job.getSnapshot());
     }
 
     private void nextMemberOrPublish(QuestionnaireSnapshot snapshot) {
-        var roster=assignments.findAllBySnapshotId(snapshot.getId()).stream().sorted(Comparator.comparing(QuestionnaireAssignment::getId)).toList();
+        var roster=jdbc.query("""
+                SELECT a.id, count(q.id) AS question_count
+                FROM questionnaire_assignments a LEFT JOIN questionnaire_questions q ON q.assignment_id=a.id
+                WHERE a.snapshot_id=? GROUP BY a.id
+                """,(rs,row)->new MemberProgress(rs.getObject("id",UUID.class),
+                rs.getInt("question_count")),snapshot.getId()).stream().sorted(Comparator.comparing(MemberProgress::id)).toList();
         if (roster.isEmpty()) throw new IllegalStateException("FROZEN_ROSTER_UNAVAILABLE");
-        for (QuestionnaireAssignment member : roster) {
-            int count=questionCount(member.getId());
+        for (var member : roster) {
+            int count=member.questionCount();
             if (count!=0 && count!=5) throw new IllegalStateException("PARTIAL_QUESTION_SET");
             if (count==0) {
                 boolean pending=jobs.findAllBySnapshotIdOrderByCreatedAtAsc(snapshot.getId()).stream()
-                        .anyMatch(j -> !terminal(j) && j.getAssignment()!=null && j.getAssignment().getId().equals(member.getId()));
-                if (!pending) jobs.save(QuestionnaireJob.builder().snapshot(snapshot).assignment(member)
-                        .kind(QuestionnaireJobKind.GENERATE_MEMBER).jobKey(snapshot.getId()+":member:"+member.getId())
+                        .anyMatch(j -> !terminal(j) && j.getAssignment()!=null && j.getAssignment().getId().equals(member.id()));
+                if (!pending) jobs.save(QuestionnaireJob.builder().snapshot(snapshot).assignment(assignments.getReferenceById(member.id()))
+                        .kind(QuestionnaireJobKind.GENERATE_MEMBER).jobKey(snapshot.getId()+":member:"+member.id())
                         .nextAttemptAt(clock.instant()).build());
                 return;
             }
@@ -200,13 +206,13 @@ public class QuestionnaireGenerationService {
         if (snapshot.getOpensAt()!=null) return;
         Instant opens=clock.instant(); snapshot.setOpensAt(opens); snapshot.setClosesAt(opens.plus(Duration.ofHours(48)));
         snapshot.setState(QuestionnaireState.OPEN);
-        for (QuestionnaireAssignment member : roster) {
-            // Publication and in-app notifications commit together; no synchronous email/provider call.
-            notifications.save(Notification.builder().recipient(users.getReferenceById(member.getStudentId()))
-                    .type(NotificationType.GENERAL).title("Project questionnaire ready")
-                    .message("Your project questionnaire is open for 48 hours.")
-                    .referenceId(member.getId().toString()).referenceType("QUESTIONNAIRE").build());
-        }
+        // Publication and in-app notifications commit together; no synchronous email/provider call.
+        jdbc.update("""
+                INSERT INTO notifications(recipient_id,type,title,message,reference_id,reference_type)
+                SELECT student_id,?,?,?,CAST(id AS text),'QUESTIONNAIRE'
+                FROM questionnaire_assignments WHERE snapshot_id=?
+                """,NotificationType.GENERAL.name(),"Project questionnaire ready",
+                "Your project questionnaire is open for 48 hours.",snapshot.getId());
     }
 
     private void defer(Work work,Instant reset) {
@@ -233,23 +239,21 @@ public class QuestionnaireGenerationService {
     }
     private void clearLease(QuestionnaireJob job) { job.setLeaseToken(null); job.setLeaseUntil(null); }
     private boolean terminal(QuestionnaireJob job) { return job.getStatus()==QuestionnaireJobStatus.SUCCEEDED || job.getStatus()==QuestionnaireJobStatus.FAILED; }
-    private int questionCount(UUID assignment) { return jdbc.queryForObject("SELECT count(*) FROM questionnaire_questions WHERE assignment_id=?",Integer.class,assignment); }
     private QuestionnaireJob lockedJob(UUID id) {
         UUID snapshot=jobs.snapshotId(id).orElseThrow(QuestionnaireGenerationService::notFound);
-        lockedSnapshot(snapshot);
+        lockSnapshot(snapshot);
         return jobs.findById(id).orElseThrow(QuestionnaireGenerationService::notFound);
     }
+    private void lockSnapshot(UUID snapshot) {
+        // Lock before Hibernate can hydrate stale state; the job's snapshot ID is immutable.
+        jdbc.queryForObject("SELECT id FROM questionnaire_snapshots WHERE id=? FOR UPDATE",UUID.class,snapshot);
+    }
     private QuestionnaireJob leased(Work work) {
-        QuestionnaireJob job=lockedJob(work.id);
+        lockSnapshot(work.snapshotId);
+        QuestionnaireJob job=jobs.findWithSnapshotById(work.id).orElseThrow(QuestionnaireGenerationService::notFound);
         if (!work.lease.equals(job.getLeaseToken()) || job.getStatus()!=QuestionnaireJobStatus.RUNNING
                 || !clock.instant().isBefore(job.getLeaseUntil())) throw busy();
         return job;
-    }
-
-    private QuestionnaireSnapshot lockedSnapshot(UUID id) {
-        // Lock before loading any entity; Hibernate follow-on locks can otherwise retain a stale pre-lock snapshot.
-        jdbc.queryForObject("SELECT id FROM questionnaire_snapshots WHERE id=? FOR UPDATE",UUID.class,id);
-        return snapshots.findById(id).orElseThrow(QuestionnaireGenerationService::notFound);
     }
 
     public Review retry(UUID submissionId) {
@@ -320,6 +324,7 @@ public class QuestionnaireGenerationService {
     public record Member(UUID assignmentId,UUID studentId,String studentName,int questionCount,int answeredCount) {}
     public record Job(UUID id,UUID retryOf,QuestionnaireJobKind kind,QuestionnaireJobStatus status,int attempts,int dispatchGeneration,Instant nextAttemptAt,Instant leaseUntil,String errorCode) {}
     private record Dispatch(int generation,Instant due) {}
+    private record MemberProgress(UUID id,int questionCount) {}
     private <T> T transaction(Supplier<T> operation) {
         return transaction(TRANSACTION_TIMEOUT_SECONDS,operation);
     }

@@ -576,6 +576,64 @@ class QuestionnaireGenerationDatabaseIT {
         assertNull(snapshot().getOpensAt());
     }
 
+    @Test void evidenceWorkerCommitsCapturedEvidenceAndDispatchesFirstMemberOverRemoteDatabase() throws Exception {
+        finals.finalSubmit(party,leader,0L);
+        UUID job=activeJob();
+        when(github.capture(eq(resolution),anyString(),isNull())).thenAnswer(call->{
+            profileFetchProbe.delayNextResultWrite.set(true);
+            return capturedEvidence();
+        });
+        try(var http=new WorkerHttp(worker,evaluation)) {
+            assertEquals(204,http.post(job));
+            var review=worker.review(submission);
+            assertNull(review.opensAt());
+            assertEquals(QuestionnaireJobStatus.SUCCEEDED,review.jobs().get(0).status(),
+                    ()->"EVIDENCE worker result: "+review.jobs().get(0).errorCode()
+                            +"; delayed database operations: "+profileFetchProbe.resultWriteStatements);
+            assertEquals(2,review.jobs().size());
+            assertEquals(QuestionnaireJobKind.GENERATE_MEMBER,review.jobs().get(1).kind());
+            assertEquals(QuestionnaireJobStatus.DISPATCHED,review.jobs().get(1).status());
+            assertEquals(0,review.jobs().get(1).attempts());
+            assertEquals(resolution.commitSha(),jdbc.queryForObject(
+                    "SELECT commit_sha FROM questionnaire_evidence WHERE snapshot_id=?",String.class,snapshot().getId()));
+            assertFalse(profileFetchProbe.resultWriteStatements.isEmpty());
+        }
+        verifyNoInteractions(ai);
+    }
+
+    @Test void memberWorkersPublishBothSetsAfterPersistingResultsOverRemoteDatabase() throws Exception {
+        evidenceReady();
+        doAnswer(call->{
+            var result=successfulGenerationResult(call);
+            profileFetchProbe.delayNextResultWrite.set(true);
+            return result;
+        }).when(ai).generate(any(),any(Runnable.class));
+        try(var http=new WorkerHttp(worker,evaluation)) {
+            UUID first=activeJob();
+            assertEquals(204,http.post(first));
+            var halfway=worker.review(submission);
+            assertNull(halfway.opensAt());
+            assertEquals(QuestionnaireJobStatus.SUCCEEDED,
+                    halfway.jobs().stream().filter(job->job.id().equals(first)).findFirst().orElseThrow().status());
+            profileFetchProbe.resultWriteStatements.clear();
+            assertEquals(204,http.post(activeJob()));
+            var open=worker.review(submission);
+            assertEquals(QuestionnaireState.OPEN,open.state(),
+                    ()->"Member job results: "+open.jobs().stream().map(QuestionnaireGenerationService.Job::errorCode).toList()
+                            +"; delayed database operations: "+profileFetchProbe.resultWriteStatements);
+            assertEquals(now,open.opensAt());
+            assertEquals(now.plus(Duration.ofHours(48)),open.closesAt());
+            assertEquals(List.of(5,5),open.members().stream().map(QuestionnaireGenerationService.Member::questionCount).toList());
+            assertEquals(1,profileFetchProbe.resultWriteStatements.stream()
+                    .filter(sql->sql.startsWith("INSERT INTO questionnaire_questions")).count());
+            assertEquals(1,profileFetchProbe.resultWriteStatements.stream()
+                    .filter(sql->sql.startsWith("INSERT INTO notifications")).count());
+            assertEquals(2,notificationCount());
+            assertEquals(2,open.jobs().stream().filter(job->job.kind()==QuestionnaireJobKind.GENERATE_MEMBER
+                    && job.status()==QuestionnaireJobStatus.SUCCEEDED && job.attempts()==1).count());
+        }
+    }
+
     @Test void acceptsFullLegitimateApprovedProjectBriefWithoutTruncation() throws Exception {
         String text="x".repeat(2000);
         jdbc.update("UPDATE projects SET description=?,scope=?,deliverables=?,evaluation_criteria=? WHERE id=?",text,text,text,text,project);
@@ -811,11 +869,14 @@ class QuestionnaireGenerationDatabaseIT {
 
     UUID activeJob() { return worker.review(submission).jobs().stream().filter(j->j.status()!=QuestionnaireJobStatus.SUCCEEDED && j.status()!=QuestionnaireJobStatus.FAILED).findFirst().orElseThrow().id(); }
     int notificationCount() { return jdbc.queryForObject("SELECT count(*) FROM notifications WHERE recipient_id IN (?,?)",Integer.class,leader,member); }
-    void evidenceReady() {
-        finals.finalSubmit(party,leader,0L);
-        var captured=new GitHubEvidence(resolution,now,List.of(),List.of(new GitHubEvidence.FileEvidence(GitHubEvidence.Kind.SOURCE,"src/Engine.java","c".repeat(40),"d".repeat(64),22,2,1,2,"class Engine {\n}\n",false)),
+    GitHubEvidence capturedEvidence() {
+        return new GitHubEvidence(resolution,now,List.of(),List.of(new GitHubEvidence.FileEvidence(GitHubEvidence.Kind.SOURCE,"src/Engine.java","c".repeat(40),"d".repeat(64),22,2,1,2,"class Engine {\n}\n",false)),
                 new GitHubEvidence.ContributorSnapshot(now,false,false,List.of(new GitHubEvidence.Contributor("frozen-leader",4))),List.of(),
                 new GitHubEvidence.Bounds(16,32000,17,4000,8,1000,128,8192,65536,262144,2097152,100));
+    }
+    void evidenceReady() {
+        finals.finalSubmit(party,leader,0L);
+        var captured=capturedEvidence();
         when(github.capture(eq(resolution),anyString(),any())).thenAnswer(call -> { assertFalse(TransactionSynchronizationManager.isActualTransactionActive()); return captured; });
         worker.handle(activeJob());
         when(ai.prepareGeneration(anyString(),any(),any(),anyList(),anyList())).thenAnswer(call -> {
@@ -824,12 +885,13 @@ class QuestionnaireGenerationDatabaseIT {
     }
     UUID generatedMember; List<UUID> generatedIds; List<String> capturedPrior;
     void successfulGeneration() {
-        doAnswer(call -> {
-            assertFalse(TransactionSynchronizationManager.isActualTransactionActive()); ((Runnable)call.getArgument(1)).run();
-            var result=new ArrayList<AssessmentAIService.Question>();
-            for (int i=0;i<5;i++) result.add(new AssessmentAIService.Question(generatedIds.get(i),"Explain synthetic implementation boundary "+generatedMember+" question "+i,"Private rubric",List.of(new GitHubEvidence.SourceReference("src/Engine.java",1,2))));
-            return new AssessmentAIService.GeneratedQuestions(generatedMember,result);
-        }).when(ai).generate(any(),any(Runnable.class));
+        doAnswer(this::successfulGenerationResult).when(ai).generate(any(),any(Runnable.class));
+    }
+    AssessmentAIService.GeneratedQuestions successfulGenerationResult(org.mockito.invocation.InvocationOnMock call) {
+        assertFalse(TransactionSynchronizationManager.isActualTransactionActive()); ((Runnable)call.getArgument(1)).run();
+        var result=new ArrayList<AssessmentAIService.Question>();
+        for (int i=0;i<5;i++) result.add(new AssessmentAIService.Question(generatedIds.get(i),"Explain synthetic implementation boundary "+generatedMember+" question "+i,"Private rubric",List.of(new GitHubEvidence.SourceReference("src/Engine.java",1,2))));
+        return new AssessmentAIService.GeneratedQuestions(generatedMember,result);
     }
 
     QuestionnaireSnapshot snapshot() { return snapshots.findBySubmissionIdAndAssessmentVersion(submission,2).orElseThrow(); }
@@ -844,6 +906,8 @@ class QuestionnaireGenerationDatabaseIT {
         volatile boolean retryLatency;
         final Queue<ReviewRead> reviewReads=new ConcurrentLinkedQueue<>();
         final Queue<RetryStatement> retryStatements=new ConcurrentLinkedQueue<>();
+        final Queue<String> resultWriteStatements=new ConcurrentLinkedQueue<>();
+        final java.util.concurrent.atomic.AtomicBoolean delayNextResultWrite=new java.util.concurrent.atomic.AtomicBoolean();
         final Set<String> tables=ConcurrentHashMap.newKeySet();
         final java.util.concurrent.atomic.AtomicBoolean delayed=new java.util.concurrent.atomic.AtomicBoolean();
         void start(){tables.clear();delayed.set(false);active=true;}
@@ -853,24 +917,30 @@ class QuestionnaireGenerationDatabaseIT {
             if(bean instanceof DataSource dataSource) return new DelegatingDataSource(dataSource) {
                 @Override public Connection getConnection() throws SQLException {
                     var connection=super.getConnection();
-                    return reviewLatency || retryLatency?delayedConnection(connection,retryLatency):connection;
+                    boolean resultWrite=delayNextResultWrite.compareAndSet(true,false);
+                    return reviewLatency || retryLatency || resultWrite?delayedConnection(connection,retryLatency,resultWrite):connection;
                 }
             };
             return bean;
         }
-        private Connection delayedConnection(Connection connection,boolean retry) {
+        private Connection delayedConnection(Connection connection,boolean retry,boolean resultWrite) {
             return (Connection)Proxy.newProxyInstance(getClass().getClassLoader(),new Class<?>[]{Connection.class},
                     (proxy,method,args)->{
                         Object result=invoke(connection,method,args);
                         if(method.getName().equals("prepareStatement") && result instanceof PreparedStatement statement)
-                            return delayedStatement(statement,(String)args[0],retry);
+                            return delayedStatement(statement,(String)args[0],retry,resultWrite);
                         return result;
                     });
         }
-        private PreparedStatement delayedStatement(PreparedStatement statement,String sql,boolean retry) {
+        private PreparedStatement delayedStatement(PreparedStatement statement,String sql,boolean retry,boolean resultWrite) {
             return (PreparedStatement)Proxy.newProxyInstance(getClass().getClassLoader(),new Class<?>[]{PreparedStatement.class},
                     (proxy,method,args)->{
                         if(!method.getName().startsWith("execute")) return invoke(statement,method,args);
+                        if(resultWrite) {
+                            resultWriteStatements.add(sql);
+                            Thread.sleep(440);
+                            return invoke(statement,method,args);
+                        }
                         if(retry) {
                             String phase=StackWalker.getInstance().walk(frames->frames
                                     .filter(f->f.getClassName().equals(QuestionnaireGenerationService.class.getName()))

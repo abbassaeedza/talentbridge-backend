@@ -11,4 +11,6 @@ public interface QuestionnaireJobRepository extends JpaRepository<QuestionnaireJ
     List<QuestionnaireJob> findAllBySnapshotIdOrderByCreatedAtAsc(UUID snapshotId);
     @Query("SELECT j.snapshot.id FROM QuestionnaireJob j WHERE j.id = :id")
     Optional<UUID> snapshotId(@Param("id") UUID id);
+    @Query("SELECT j FROM QuestionnaireJob j JOIN FETCH j.snapshot WHERE j.id = :id")
+    Optional<QuestionnaireJob> findWithSnapshotById(@Param("id") UUID id);
 }
