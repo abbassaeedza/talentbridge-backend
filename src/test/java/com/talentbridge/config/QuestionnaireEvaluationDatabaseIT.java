@@ -178,6 +178,9 @@ class QuestionnaireEvaluationDatabaseIT {
                     ()->kind+" result: "+step.errorCode()+"; delayed SQL statements: "+sqlProbe.resultWriteStatements);
             assertEquals(1,step.attempts());
             if (isRepository) {
+                assertTrue(jdbc.queryForObject("SELECT result IS NOT NULL FROM questionnaire_evaluation_steps WHERE job_id=?",
+                        Boolean.class,target),()->"Repository result missing after commit; SQL operations: "+sqlProbe.resultWriteStatements.stream()
+                        .map(sql->sql.strip().split("\\s+",2)[0]).toList());
                 assertEquals("DISPATCHED",read.steps().get(1).status().toString());
                 assertNull(read.reportId());
             } else {
@@ -630,6 +633,42 @@ class QuestionnaireEvaluationDatabaseIT {
         } finally {
             jdbc.execute("DROP TRIGGER "+trigger+" ON evaluation_reports"); jdbc.execute("DROP FUNCTION "+trigger+"()");
         }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"result","assignment"})
+    void privateResultDatabaseFailureDoesNotLogGradingPayload(String failedWrite) throws Exception {
+        var run=service.start(submission,coordinator);
+        deliver(run.steps().get(0).jobId());
+        UUID target=run.steps().get(1).jobId();
+        String trigger="task4_private_failure_"+UUID.randomUUID().toString().replace("-","");
+        boolean result=failedWrite.equals("result");
+        String table=result?"questionnaire_evaluation_steps":"questionnaire_assignments";
+        String field=result?"result":"effective_score";
+        String predicate=result?"NEW.job_id='"+target+"'::uuid":"NEW.snapshot_id='"+snapshot+"'::uuid";
+        jdbc.execute("CREATE FUNCTION "+trigger+"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF "+predicate+" AND NEW."+field+" IS NOT NULL THEN RAISE EXCEPTION 'SYNTHETIC_PRIVATE_UPDATE_FAILURE'; END IF; RETURN NEW; END $$");
+        jdbc.execute("CREATE TRIGGER "+trigger+" BEFORE UPDATE OF "+field+" ON "+table+" FOR EACH ROW EXECUTE FUNCTION "+trigger+"()");
+        var root=(ch.qos.logback.classic.Logger)org.slf4j.LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
+        var captured=new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        captured.start();root.addAppender(captured);
+        try(var http=new QuestionnaireGenerationDatabaseIT.WorkerHttp(generation,service)) {
+            assertEquals(204,http.post(target));
+            assertTrue(service.report(submission,coordinator).isEmpty());
+            assertEquals(List.of("FAILED"),jdbc.queryForList("SELECT outcome FROM questionnaire_job_attempts WHERE job_id=?",String.class,target));
+            assertFalse(captured.list.stream().anyMatch(event->{
+                if(hasPrivateFixtureText(event.getFormattedMessage()))return true;
+                for(var error=event.getThrowableProxy();error!=null;error=error.getCause())
+                    if(hasPrivateFixtureText(error.getMessage()))return true;
+                return false;
+            }),"A "+failedWrite+" database error logged synthetic private grading text");
+        } finally {
+            root.detachAppender(captured);captured.stop();
+            jdbc.execute("DROP TRIGGER "+trigger+" ON "+table);jdbc.execute("DROP FUNCTION "+trigger+"()");
+        }
+    }
+
+    private static boolean hasPrivateFixtureText(String text) {
+        return text!=null && (text.contains("Private grading feedback") || text.contains("Locked private answer"));
     }
 
     @Test void actualFinalizeHttpCannotOverwriteAnExistingLegacyScorecardForTheSameProject() throws Exception {
