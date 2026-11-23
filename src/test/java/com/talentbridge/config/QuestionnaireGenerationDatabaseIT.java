@@ -37,6 +37,10 @@ import static org.mockito.ArgumentMatchers.*;
         "jwt.expiration-ms=60000", "jwt.refresh-expiration-ms=120000", "app.questionnaire-enabled=true"})
 class QuestionnaireGenerationDatabaseIT {
     private static final long REVIEW_READ_DELAY_MS=750;
+    private static final long RETRY_SQL_DELAY_MS=130;
+    private static final long RETRY_HISTORY_DELAY_MS=1200;
+    private static final long RETRY_ATTEMPT_DELAY_MS=430;
+    private static final long RETRY_DISPATCH_SQL_DELAY_MS=550;
     @Autowired QuestionnaireGenerationService worker;
     @Autowired QuestionnaireEvaluationService evaluation;
     @Autowired ProfileFetchProbe profileFetchProbe;
@@ -431,6 +435,81 @@ class QuestionnaireGenerationDatabaseIT {
         assertEquals(1,worker.review(submission).jobs().get(0).dispatchGeneration());
     }
 
+    @ParameterizedTest @ValueSource(booleans={false,true})
+    void retryHttpRecoversUnderJdbcLatencyWithoutChargingOrDispatchingWhileLeased(boolean expiredAttempt) throws Exception {
+        if(expiredAttempt) evidenceReady(); else finals.finalSubmit(party,leader,0L);
+        UUID job=activeJob();
+        UUID lease=UUID.randomUUID();
+        jdbc.update("UPDATE questionnaire_jobs SET dispatch_generation=1 WHERE id=?",job);
+        if(expiredAttempt) {
+            jdbc.update("UPDATE questionnaire_jobs SET status='RUNNING',attempts=1,lease_token=?,lease_until=?::timestamptz WHERE id=?",
+                    lease,now.toString(),job);
+            jdbc.update("INSERT INTO questionnaire_job_attempts(job_id,attempt,started_at,outcome) VALUES (?,1,?::timestamptz,'STARTED')",
+                    job,now.minusSeconds(110).toString());
+        }
+        clearInvocations(github,ai,queue);
+        var dispatchBoundary=new java.util.concurrent.atomic.AtomicInteger(-1);
+        doAnswer(call -> {
+            assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+            dispatchBoundary.set(profileFetchProbe.retryStatements.size());
+            return null;
+        }).when(queue).enqueue(eq(job),eq(2),eq(now));
+        try(var http=new WorkerHttp(worker,evaluation,drafts,finals)) {
+            profileFetchProbe.retryStatements.clear();
+            profileFetchProbe.retryLatency=true;
+            java.net.http.HttpResponse<String> response;
+            long start=System.nanoTime();
+            try { response=http.retry(submission); }
+            finally { profileFetchProbe.retryLatency=false; }
+            var statements=List.copyOf(profileFetchProbe.retryStatements);
+            System.out.println("RETRY_HTTP expiredAttempt="+expiredAttempt+" status="+response.statusCode()+
+                    " elapsedMs="+TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)+
+                    " enqueueAfterStatement="+dispatchBoundary.get()+" SQL="+statements.stream()
+                    .map(s->s.phase()+":"+s.timeoutSeconds()+":"+s.sql().split("\\s+",2)[0]).toList()+
+                    " failure="+http.logs.list.stream().map(e->e.getThrowableProxy()).filter(Objects::nonNull)
+                    .map(e->e.getClassName()+": "+e.getMessage()+" / "+(e.getCause()==null?"":e.getCause().getMessage())+
+                            " mutationAtCommit="+(e.getCause()!=null && Arrays.stream(e.getCause().getStackTraceElementProxyArray())
+                            .anyMatch(frame->frame.toString().contains("MutationStatementPreparer")))).toList());
+            assertEquals(200,response.statusCode());
+            assertEquals("no-store",response.headers().firstValue("Cache-Control").orElseThrow());
+            var review=inputMapper.readValue(response.body(),QuestionnaireGenerationService.Review.class);
+            assertEquals(submission,review.submissionId());
+            assertEquals(QuestionnaireState.GENERATING,review.state());
+            assertNull(review.opensAt()); assertNull(review.closesAt());
+            var recovered=review.jobs().stream().filter(j->j.id().equals(job)).findFirst().orElseThrow();
+            assertEquals(expiredAttempt?QuestionnaireJobKind.GENERATE_MEMBER:QuestionnaireJobKind.EVIDENCE,recovered.kind());
+            assertEquals(QuestionnaireJobStatus.DISPATCHED,recovered.status());
+            assertEquals(2,recovered.dispatchGeneration()); assertEquals(expiredAttempt?1:0,recovered.attempts());
+            assertNull(recovered.leaseUntil()); assertNull(recovered.retryOf());
+            assertEquals(expiredAttempt?List.of("UNKNOWN"):List.of(),jdbc.queryForList(
+                    "SELECT outcome FROM questionnaire_job_attempts WHERE job_id=?",String.class,job));
+            assertNull(jdbc.queryForObject("SELECT lease_token FROM questionnaire_jobs WHERE id=?",UUID.class,job));
+            int boundary=dispatchBoundary.get();
+            assertTrue(boundary>0 && boundary<statements.size());
+            assertTrue(statements.subList(0,boundary).stream().anyMatch(s->s.phase().equals("dispatch")));
+            assertTrue(statements.subList(boundary,statements.size()).stream()
+                    .anyMatch(s->s.phase().equals("dispatch") && s.sql().startsWith("update questionnaire_jobs")));
+            assertTrue(statements.stream().allMatch(s->s.inTransaction() && s.timeoutSeconds()>0 && s.timeoutSeconds()<=5));
+            assertEquals(1,statements.stream().filter(s->s.phase().equals("review") && s.timeoutSeconds()<=2).count());
+            assertEquals(expiredAttempt?1:0,statements.stream().filter(s->s.sql().contains("UPDATE questionnaire_job_attempts")).count());
+
+            jdbc.update("UPDATE questionnaire_jobs SET status='RUNNING',lease_token=?,lease_until=?::timestamptz WHERE id=?",
+                    lease,now.plusSeconds(110).toString(),job);
+            assertEquals(409,http.retry(submission).statusCode());
+            var running=jobs.findById(job).orElseThrow();
+            assertEquals(QuestionnaireJobStatus.RUNNING,running.getStatus());
+            assertEquals(lease,running.getLeaseToken()); assertEquals(now.plusSeconds(110),running.getLeaseUntil());
+            assertEquals(2,running.getDispatchGeneration()); assertEquals(expiredAttempt?1:0,running.getAttempts());
+            if(!expiredAttempt) {
+                jdbc.update("UPDATE questionnaire_snapshots SET assessment_version=1 WHERE id=?",snapshot().getId());
+                assertEquals(404,http.retry(submission).statusCode());
+            }
+            verify(queue).enqueue(job,2,now);
+            verifyNoMoreInteractions(queue);
+            verifyNoInteractions(github,ai);
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(ints = {100, 101, 255})
     void omittedDefaultBranchPersistsExactlyAndRecoveryNeverRepins(int length) {
@@ -762,7 +841,9 @@ class QuestionnaireGenerationDatabaseIT {
     static class ProfileFetchProbe implements org.springframework.beans.factory.config.BeanPostProcessor,org.hibernate.resource.jdbc.spi.StatementInspector {
         volatile boolean active;
         volatile boolean reviewLatency;
+        volatile boolean retryLatency;
         final Queue<ReviewRead> reviewReads=new ConcurrentLinkedQueue<>();
+        final Queue<RetryStatement> retryStatements=new ConcurrentLinkedQueue<>();
         final Set<String> tables=ConcurrentHashMap.newKeySet();
         final java.util.concurrent.atomic.AtomicBoolean delayed=new java.util.concurrent.atomic.AtomicBoolean();
         void start(){tables.clear();delayed.set(false);active=true;}
@@ -772,24 +853,40 @@ class QuestionnaireGenerationDatabaseIT {
             if(bean instanceof DataSource dataSource) return new DelegatingDataSource(dataSource) {
                 @Override public Connection getConnection() throws SQLException {
                     var connection=super.getConnection();
-                    return reviewLatency?reviewConnection(connection):connection;
+                    return reviewLatency || retryLatency?delayedConnection(connection,retryLatency):connection;
                 }
             };
             return bean;
         }
-        private Connection reviewConnection(Connection connection) {
+        private Connection delayedConnection(Connection connection,boolean retry) {
             return (Connection)Proxy.newProxyInstance(getClass().getClassLoader(),new Class<?>[]{Connection.class},
                     (proxy,method,args)->{
                         Object result=invoke(connection,method,args);
                         if(method.getName().equals("prepareStatement") && result instanceof PreparedStatement statement)
-                            return reviewStatement(statement,(String)args[0]);
+                            return delayedStatement(statement,(String)args[0],retry);
                         return result;
                     });
         }
-        private PreparedStatement reviewStatement(PreparedStatement statement,String sql) {
+        private PreparedStatement delayedStatement(PreparedStatement statement,String sql,boolean retry) {
             return (PreparedStatement)Proxy.newProxyInstance(getClass().getClassLoader(),new Class<?>[]{PreparedStatement.class},
                     (proxy,method,args)->{
                         if(!method.getName().startsWith("execute")) return invoke(statement,method,args);
+                        if(retry) {
+                            String phase=StackWalker.getInstance().walk(frames->frames
+                                    .filter(f->f.getClassName().equals(QuestionnaireGenerationService.class.getName()))
+                                    .map(StackWalker.StackFrame::getMethodName)
+                                    .filter(name->name.equals("retry") || name.equals("dispatch") || name.equals("review"))
+                                    .findFirst().orElseThrow());
+                            retryStatements.add(new RetryStatement(phase,sql,
+                                    TransactionSynchronizationManager.isActualTransactionActive(),statement.getQueryTimeout()));
+                            // Slowly read history without timing out earlier hydration, then exercise the dirty flush.
+                            long delay=phase.equals("dispatch")?RETRY_DISPATCH_SQL_DELAY_MS
+                                    :phase.equals("retry") && sql.contains("from questionnaire_jobs") && sql.contains("order by")?RETRY_HISTORY_DELAY_MS
+                                    :phase.equals("retry") && sql.contains("UPDATE questionnaire_job_attempts")?RETRY_ATTEMPT_DELAY_MS
+                                    :RETRY_SQL_DELAY_MS;
+                            Thread.sleep(delay);
+                            return invoke(statement,method,args);
+                        }
                         // Delay actual execution equally for Hibernate and JdbcTemplate, without replacing PostgreSQL.
                         var read=new ReviewRead(sql,TransactionSynchronizationManager.isActualTransactionActive(),statement.getQueryTimeout());
                         Thread.sleep(REVIEW_READ_DELAY_MS);
@@ -803,6 +900,7 @@ class QuestionnaireGenerationDatabaseIT {
             catch(InvocationTargetException failure){throw failure.getCause();}
         }
         record ReviewRead(String sql,boolean inTransaction,int timeoutSeconds) {}
+        record RetryStatement(String phase,String sql,boolean inTransaction,int timeoutSeconds) {}
         @Override public String inspect(String sql) {
             if(!active || !sql.contains("_profiles") || !StackWalker.getInstance().walk(frames->frames.anyMatch(frame->
                     frame.getClassName().equals(QuestionnaireGenerationService.class.getName()) && frame.getMethodName().equals("claim")))) return sql;
@@ -974,6 +1072,12 @@ class QuestionnaireGenerationDatabaseIT {
         java.net.http.HttpResponse<String> review(UUID submissionId) throws Exception {
             var request=java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:"+server.getPort()
                     +"/api/submissions/"+submissionId+"/questionnaire-review")).timeout(Duration.ofSeconds(15)).GET().build();
+            return java.net.http.HttpClient.newHttpClient().send(request,java.net.http.HttpResponse.BodyHandlers.ofString());
+        }
+        java.net.http.HttpResponse<String> retry(UUID submissionId) throws Exception {
+            var request=java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:"+server.getPort()
+                    +"/api/submissions/"+submissionId+"/questionnaire/retry")).timeout(Duration.ofSeconds(15))
+                    .POST(java.net.http.HttpRequest.BodyPublishers.noBody()).build();
             return java.net.http.HttpClient.newHttpClient().send(request,java.net.http.HttpResponse.BodyHandlers.ofString());
         }
         int post(UUID id) throws Exception {
