@@ -119,10 +119,12 @@ public class QuestionnaireEvaluationService {
         Work work=transaction(()->claim(jobId));
         if(work!=null) {
             try {
+                var inputs=prepare(work);
                 // Reprepare the persisted partition, never replan it on recovery.
-                var repository=ai.prepareRepositoryEvaluation(work.brief(),work.evidence());
+                var repository=ai.prepareRepositoryEvaluation(work.brief(),inputs.evidence());
                 var prepared=new ArrayList<PreparedQuestionnaireEvaluation>();
-                for(var batch:work.partition()) prepared.add(ai.prepareQuestionnaireBatch(work.brief(),work.evidence(),batch));
+                for(var batch:inputs.partition()) prepared.add(ai.prepareQuestionnaireBatch(work.brief(),inputs.evidence(),batch));
+                transaction(()->{leased(work);return null;});
                 Runnable attempt=()->transaction(()->{startAttempt(work);return null;});
                 JsonNode result="REPOSITORY".equals(work.kind())?json.valueToTree(ai.evaluateRepository(repository,attempt))
                         :json.valueToTree(ai.evaluateQuestionnaire(prepared.get(work.position()-1),attempt));
@@ -156,8 +158,13 @@ public class QuestionnaireEvaluationService {
         finishAttempt(job,"UNKNOWN","LEASE_EXPIRED"); clearLease(job);
         if(job.getAttempts()>=3) {job.setStatus(QuestionnaireJobStatus.FAILED);job.setLastErrorCode("ATTEMPT_LIMIT");run.setStatus("FAILED"); return null;}
         job.setStatus(QuestionnaireJobStatus.RUNNING); job.setLeaseToken(UUID.randomUUID());job.setLeaseUntil(now.plusSeconds(110));
-        var partition=all.stream().filter(s->s.getPosition()>0).map(s->members(s.getMembers())).toList();
-        return new Work(id,job.getLeaseToken(),job.getAttempts(),run.getId(),step.getId(),step.getPosition(),step.getKind(),job.getSnapshot().getFrozenBrief(),captured(job.getSnapshot().getId()),partition);
+        return new Work(id,job.getLeaseToken(),job.getAttempts(),run.getId(),step.getId(),step.getPosition(),step.getKind(),job.getSnapshot().getId(),job.getSnapshot().getFrozenBrief());
+    }
+
+    private Inputs prepare(Work work) {
+        var frozen=transaction(()->evidence.findBySnapshotId(work.snapshotId()).orElseThrow(QuestionnaireEvaluationService::notFound).getEvidence());
+        var partition=transaction(()->steps.findAllByRunIdOrderByPosition(work.runId()).stream().filter(s->s.getPosition()>0).map(QuestionnaireEvaluationStep::getMembers).toList());
+        return new Inputs(captured(frozen),partition.stream().map(this::members).map(List::copyOf).toList());
     }
 
     private void startAttempt(Work work) {
@@ -249,8 +256,7 @@ public class QuestionnaireEvaluationService {
     }
 
     private void fail(Work work) {
-        var job=lockJob(work.jobId());
-        if(!work.lease().equals(job.getLeaseToken())) throw busy();
+        var job=leased(work);
         finishAttempt(job,"FAILED","EVALUATION_UNAVAILABLE"); clearLease(job);job.setLastErrorCode("EVALUATION_UNAVAILABLE");
         if(job.getAttempts()<=work.attemptsAtClaim() || job.getAttempts()>=3) {
             job.setStatus(QuestionnaireJobStatus.FAILED);runs.findById(work.runId()).orElseThrow().setStatus("FAILED");
@@ -390,7 +396,10 @@ public class QuestionnaireEvaluationService {
     }
 
     private GitHubEvidence captured(UUID snapshot) {
-        var value=convert(evidence.findBySnapshotId(snapshot).orElseThrow(QuestionnaireEvaluationService::notFound).getEvidence(),GitHubEvidence.class);
+        return captured(evidence.findBySnapshotId(snapshot).orElseThrow(QuestionnaireEvaluationService::notFound).getEvidence());
+    }
+    private GitHubEvidence captured(JsonNode frozen) {
+        var value=convert(frozen,GitHubEvidence.class);
         if(value.contributors()==null || value.contributors().capturedAt()==null || value.contributors().records().stream().anyMatch(c->c.login()==null || c.contributions()<0))
             throw conflict("Frozen contributor evidence is unavailable");
         return value;
@@ -435,7 +444,8 @@ public class QuestionnaireEvaluationService {
     private static ResponseStatusException conflict(String message){return error(HttpStatus.CONFLICT,message);}
     private static ResponseStatusException busy(){return error(HttpStatus.SERVICE_UNAVAILABLE,"Evaluation is busy; retry delivery");}
     private record Dispatch(UUID job,int generation,Instant due){}
-    private record Work(UUID jobId,UUID lease,int attemptsAtClaim,UUID runId,UUID stepId,int position,String kind,String brief,GitHubEvidence evidence,List<List<MemberAnswers>> partition){}
+    private record Work(UUID jobId,UUID lease,int attemptsAtClaim,UUID runId,UUID stepId,int position,String kind,UUID snapshotId,String brief){}
+    private record Inputs(GitHubEvidence evidence,List<List<MemberAnswers>> partition){}
     public record RunView(UUID id,UUID submissionId,int assessmentVersion,String status,UUID reportId,Instant serverNow,List<StepView> steps){}
     public record StepView(UUID id,UUID jobId,int position,String kind,int questionCount,QuestionnaireJobStatus status,int attempts,int dispatchGeneration,Instant nextAttemptAt,Instant leaseUntil,String errorCode){}
     public record PrivateReview(UUID submissionId,QuestionnaireState state,Instant opensAt,Instant closesAt,Instant serverNow,List<PrivateMember> members){}

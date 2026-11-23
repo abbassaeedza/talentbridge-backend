@@ -41,6 +41,7 @@ class QuestionnaireEvaluationDatabaseIT {
     @Autowired QuestionnaireAssignmentRepository assignments;
     @Autowired EvaluationReportRepository reports;
     @Autowired ObjectMapper json;
+    @Autowired QuestionnaireGenerationDatabaseIT.PreparationMapper inputMapper;
     @Autowired MutableClock clock;
     @Autowired DataSource source;
     @Autowired PlatformTransactionManager transactions;
@@ -50,6 +51,7 @@ class QuestionnaireEvaluationDatabaseIT {
     final Map<AssessmentAIService.PreparedQuestionnaireEvaluation,List<AssessmentAIService.MemberAnswers>> preparedMembers=Collections.synchronizedMap(new IdentityHashMap<>());
 
     @BeforeEach void fixture() throws Exception {
+        inputMapper.resetProbe();
         jdbc=new JdbcTemplate(source); reset(ai,queue,legacyGithub,legacyAi); clock.set(closes);preparedMembers.clear();
         student=UUID.randomUUID(); other=UUID.randomUUID(); coordinator=UUID.randomUUID(); project=UUID.randomUUID();
         party=UUID.randomUUID(); submission=UUID.randomUUID(); snapshot=UUID.randomUUID();
@@ -87,6 +89,7 @@ class QuestionnaireEvaluationDatabaseIT {
     }
 
     @AfterEach void cleanup() {
+        inputMapper.resetProbe();
         jdbc.update("DELETE FROM notifications WHERE recipient_id IN (?,?,?)",student,other,coordinator);
         jdbc.update("DELETE FROM scorecard_entries WHERE project_id=?",project);
         jdbc.update("DELETE FROM scorecards WHERE student_id IN (?,?)",student,other);
@@ -142,6 +145,79 @@ class QuestionnaireEvaluationDatabaseIT {
         var individual=safe.getStudentScores().stream().filter(s->s.getStudent().getId().equals(student)).findFirst().orElseThrow();
         assertEquals(40,individual.getContributionPercentage()); assertEquals(78.6,individual.getIndividualScore());
         verifyNoInteractions(generation);
+    }
+
+    @Test void slowFrozenPreparationCannotExpireEvaluationClaimCommitThroughRealHttp() throws Exception {
+        var run=service.start(submission,coordinator);UUID job=run.steps().get(0).jobId();
+        var frozen=jdbc.queryForList("SELECT id,position,members FROM questionnaire_evaluation_steps WHERE run_id=? ORDER BY position",run.id());
+        var quota=jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1");
+        clearInvocations(ai,queue);
+        inputMapper.type=GitHubEvidence.class;
+        inputMapper.afterRead=()->{try {Thread.sleep(2100);} catch(InterruptedException e){Thread.currentThread().interrupt();throw new IllegalStateException("Synthetic preparation interrupted");}};
+        try(var http=new QuestionnaireGenerationDatabaseIT.WorkerHttp(generation,service)) {
+            int status=http.post(job);
+            if(status==500) {
+                http.assertCommitTimeout();
+                var state=jdbc.queryForMap("SELECT status,attempts,lease_token,lease_until,last_error_code FROM questionnaire_jobs WHERE id=?",job);
+                assertEquals("DISPATCHED",state.get("status"));assertEquals(0,state.get("attempts"));
+                assertNull(state.get("lease_token"));assertNull(state.get("lease_until"));assertNull(state.get("last_error_code"));
+                verifyNoInteractions(ai,queue);
+            }
+            assertEquals(frozen,jdbc.queryForList("SELECT id,position,members FROM questionnaire_evaluation_steps WHERE run_id=? ORDER BY position",run.id()));
+            assertEquals(quota,jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1"));
+            assertEquals(0,count("scorecard_entries"));assertEquals(0,count("notifications"));
+            System.out.println("SECOND_CLAIM_REPRO kind=EVALUATE http="+status+" preparationInTransaction="+inputMapper.inTransaction+" injectedMs=2100");
+            assertEquals(204,status);assertFalse(inputMapper.inTransaction);
+            assertEquals(QuestionnaireJobStatus.SUCCEEDED,service.run(run.id()).steps().get(0).status());
+        }
+    }
+
+    @Test void frozenPreparationFailureIsDurableAndRecoverableWithoutFakeGrades() throws Exception {
+        var run=service.start(submission,coordinator);UUID job=run.steps().get(0).jobId();
+        var frozen=jdbc.queryForList("SELECT position,members FROM questionnaire_evaluation_steps WHERE run_id=? ORDER BY position",run.id());
+        var quota=jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1");
+        clearInvocations(ai,queue);
+        inputMapper.type=GitHubEvidence.class;inputMapper.afterRead=()->{throw new IllegalStateException("Synthetic frozen input failure");};
+        try(var http=new QuestionnaireGenerationDatabaseIT.WorkerHttp(generation,service)) {
+            assertEquals(204,http.post(job));
+            var failed=service.run(run.id());assertEquals("FAILED",failed.status());
+            assertEquals(QuestionnaireJobStatus.FAILED,failed.steps().get(0).status());assertEquals(0,failed.steps().get(0).attempts());
+            var state=jdbc.queryForMap("SELECT lease_token,lease_until,last_error_code FROM questionnaire_jobs WHERE id=?",job);
+            assertNull(state.get("lease_token"));assertNull(state.get("lease_until"));assertEquals("EVALUATION_UNAVAILABLE",state.get("last_error_code"));
+            assertEquals(0,count("questionnaire_job_attempts"));assertEquals(0,count("scorecard_entries"));assertEquals(0,count("notifications"));
+            assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM questionnaire_questions q JOIN questionnaire_assignments a ON a.id=q.assignment_id WHERE a.snapshot_id=? AND q.ai_score IS NOT NULL",Integer.class,snapshot));
+            assertEquals(quota,jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1"));verifyNoInteractions(ai,queue);
+            inputMapper.resetProbe();service.retry(run.id());
+            assertEquals(frozen,jdbc.queryForList("SELECT position,members FROM questionnaire_evaluation_steps WHERE run_id=? ORDER BY position",run.id()));
+            var replacement=service.run(run.id()).steps().get(0).jobId();assertNotEquals(job,replacement);
+            assertEquals(204,http.post(replacement));assertEquals(QuestionnaireJobStatus.SUCCEEDED,service.run(run.id()).steps().get(0).status());
+        }
+    }
+
+    @Test void expiredOrReplacedLeaseDuringFrozenPreparationCannotInvokeProviderOrSave() throws Exception {
+        var run=service.start(submission,coordinator);UUID job=run.steps().get(0).jobId();
+        var frozen=jdbc.queryForList("SELECT id,members FROM questionnaire_evaluation_steps WHERE run_id=? ORDER BY position",run.id());
+        var quota=jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1");clearInvocations(ai,queue);
+        try(var http=new QuestionnaireGenerationDatabaseIT.WorkerHttp(generation,service)) {
+            for(boolean replace:List.of(false,true)) {
+                clock.set(closes);UUID replacement=UUID.randomUUID();
+                inputMapper.type=GitHubEvidence.class;inputMapper.afterRead=()->{
+                    assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+                    try {assertEquals(503,http.post(job));assertEquals(503,http.post(run.steps().get(1).jobId()));} catch(Exception e){throw new IllegalStateException(e);}
+                    if(replace) jdbc.update("UPDATE questionnaire_jobs SET lease_token=? WHERE id=?",replacement,job);
+                    else clock.set(closes.plusSeconds(110));
+                };
+                assertEquals(503,http.post(job));
+                var pending=jdbc.queryForMap("SELECT status,attempts,lease_token,last_error_code FROM questionnaire_jobs WHERE id=?",job);
+                assertEquals("RUNNING",pending.get("status"));assertEquals(0,pending.get("attempts"));assertNull(pending.get("last_error_code"));
+                if(replace) assertEquals(replacement,pending.get("lease_token"));
+                assertEquals(frozen,jdbc.queryForList("SELECT id,members FROM questionnaire_evaluation_steps WHERE run_id=? ORDER BY position",run.id()));
+                assertEquals(quota,jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1"));
+                assertEquals(0,count("questionnaire_job_attempts"));assertEquals(0,count("scorecard_entries"));assertEquals(0,count("notifications"));
+                verify(ai,never()).evaluateRepository(any(),any(Runnable.class));verify(ai,never()).evaluateQuestionnaire(any(),any(Runnable.class));verifyNoInteractions(queue);
+                jdbc.update("UPDATE questionnaire_jobs SET lease_until=?::timestamptz WHERE id=?",closes.minusSeconds(1).toString(),job);
+            }
+        }
     }
 
     @Test void preflightFailureCannotChargeOrDispatchRepositoryStep() {
@@ -594,7 +670,7 @@ class QuestionnaireEvaluationDatabaseIT {
     @Configuration @Import({QuestionnaireEvaluationService.class,AssessmentJobController.class,QuestionnaireService.class,ScorecardService.class,EvaluationService.class})
     static class Config {
         @Bean MutableClock clock(){return new MutableClock();}
-        @Bean ObjectMapper mapper(){return new ObjectMapper().findAndRegisterModules();}
+        @Bean QuestionnaireGenerationDatabaseIT.PreparationMapper mapper(){return new QuestionnaireGenerationDatabaseIT.PreparationMapper();}
         @Bean AssessmentAIService ai(){return mock(AssessmentAIService.class);}
         @Bean AssessmentTaskQueue queue(){return mock(AssessmentTaskQueue.class);}
         @Bean QuestionnaireGenerationService generation(){return mock(QuestionnaireGenerationService.class);}

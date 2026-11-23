@@ -32,6 +32,7 @@ class QuestionnaireGenerationDatabaseIT {
     @Autowired QuestionnaireGenerationService worker;
     @Autowired QuestionnaireEvaluationService evaluation;
     @Autowired ProfileFetchProbe profileFetchProbe;
+    @Autowired PreparationMapper inputMapper;
     @Autowired QuestionnaireFinalSubmissionService finals;
     @Autowired SubmissionService drafts;
     @Autowired QuestionnaireService owners;
@@ -54,6 +55,7 @@ class QuestionnaireGenerationDatabaseIT {
             "main", "main", "a".repeat(40), "b".repeat(40));
 
     @BeforeEach void fixture() {
+        inputMapper.resetProbe();
         reset(queue, github, ai, legacyNotifications); jdbc = new JdbcTemplate(source); clock.set(now);
         universitySupervisor=null; projectSupervisor=null;
         leader=UUID.randomUUID(); member=UUID.randomUUID(); party=UUID.randomUUID(); project=UUID.randomUUID(); submission=UUID.randomUUID();
@@ -69,6 +71,7 @@ class QuestionnaireGenerationDatabaseIT {
     }
 
     @AfterEach void cleanup() {
+        inputMapper.resetProbe();
         jdbc.update("DELETE FROM notifications WHERE recipient_id IN (?,?)",leader,member);
         if(universitySupervisor!=null) jdbc.update("DELETE FROM notifications WHERE recipient_id IN (?,?)",universitySupervisor,projectSupervisor);
         jdbc.update("DELETE FROM questionnaire_job_attempts WHERE job_id IN (SELECT j.id FROM questionnaire_jobs j JOIN questionnaire_snapshots s ON s.id=j.snapshot_id WHERE s.submission_id=?)",submission);
@@ -230,6 +233,96 @@ class QuestionnaireGenerationDatabaseIT {
         assertEquals(1,calls.get()); assertEquals(QuestionnaireJobStatus.SUCCEEDED,persisted.getStatus());
         assertNull(persisted.getLeaseToken()); assertNull(persisted.getLeaseUntil());
         assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM questionnaire_evidence WHERE snapshot_id=?",Integer.class,snapshot().getId()));
+    }
+
+    @ParameterizedTest @ValueSource(strings={"EVIDENCE","GENERATE_MEMBER"})
+    void slowFrozenPreparationCannotExpireClaimCommitThroughRealHttp(String kind) throws Exception {
+        if(kind.equals("EVIDENCE")) {
+            finals.finalSubmit(party,leader,0L);
+            when(github.capture(eq(resolution),anyString(),any())).thenReturn(new GitHubEvidence(resolution,now,List.of(),List.of(),
+                    new GitHubEvidence.ContributorSnapshot(now,false,false,List.of()),List.of(),
+                    new GitHubEvidence.Bounds(16,32000,0,4000,8,1000,128,8192,65536,262144,2097152,100)));
+        } else { evidenceReady(); successfulGeneration(); }
+        UUID target=activeJob();
+        var frozen=snapshot().getFrozenResolution().deepCopy();
+        var roster=assignments.findAllBySnapshotId(snapshot().getId()).stream().map(QuestionnaireAssignment::getId).sorted().toList();
+        var quota=jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1");
+        clearInvocations(github,ai);
+        inputMapper.type=kind.equals("EVIDENCE")?GitHubEvidence.Resolution.class:GitHubEvidence.class;
+        inputMapper.afterRead=()->{try {Thread.sleep(2100);} catch(InterruptedException e){Thread.currentThread().interrupt();throw new IllegalStateException("Synthetic preparation interrupted");}};
+        try(var http=new WorkerHttp(worker,evaluation)) {
+            int status=http.post(target);
+            if(status==500) {
+                http.assertCommitTimeout();
+                var rolled=jobs.findById(target).orElseThrow();
+                assertEquals(QuestionnaireJobStatus.DISPATCHED,rolled.getStatus()); assertEquals(0,rolled.getAttempts());
+                assertNull(rolled.getLeaseToken()); assertNull(rolled.getLeaseUntil()); assertNull(rolled.getLastErrorCode());
+                verifyNoInteractions(github,ai);
+            }
+            assertEquals(frozen,snapshot().getFrozenResolution());
+            assertEquals(roster,assignments.findAllBySnapshotId(snapshot().getId()).stream().map(QuestionnaireAssignment::getId).sorted().toList());
+            assertEquals(quota,jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1"));
+            assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM questionnaire_job_attempts WHERE job_id=? AND outcome<>'SUCCEEDED'",Integer.class,target));
+            System.out.println("SECOND_CLAIM_REPRO kind="+kind+" http="+status+" preparationInTransaction="+inputMapper.inTransaction+" injectedMs=2100");
+            assertEquals(204,status); assertFalse(inputMapper.inTransaction);
+            assertEquals(QuestionnaireJobStatus.SUCCEEDED,jobs.findById(target).orElseThrow().getStatus());
+        }
+    }
+
+    @ParameterizedTest @ValueSource(strings={"EVIDENCE","GENERATE_MEMBER"})
+    void frozenPreparationFailureIsDurableAndRecoverableWithoutProviderOrQuota(String kind) throws Exception {
+        if(kind.equals("EVIDENCE")) finals.finalSubmit(party,leader,0L);
+        else {evidenceReady();successfulGeneration();}
+        UUID job=activeJob();var quota=jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1");
+        clearInvocations(github,ai,queue);
+        inputMapper.type=kind.equals("EVIDENCE")?GitHubEvidence.Resolution.class:GitHubEvidence.class;
+        inputMapper.afterRead=()->{throw new IllegalStateException("Synthetic frozen input failure");};
+        try(var http=new WorkerHttp(worker,evaluation)) {
+            assertEquals(204,http.post(job));
+            var failed=jobs.findById(job).orElseThrow();
+            assertEquals(QuestionnaireJobStatus.FAILED,failed.getStatus());assertEquals("FROZEN_INPUT_UNAVAILABLE",failed.getLastErrorCode());
+            assertEquals(0,failed.getAttempts());assertNull(failed.getLeaseToken());assertNull(failed.getLeaseUntil());
+            assertEquals(QuestionnaireState.FAILED,snapshot().getState());assertNull(snapshot().getOpensAt());
+            assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM questionnaire_job_attempts WHERE job_id=?",Integer.class,job));
+            assertEquals(quota,jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1"));
+            verifyNoInteractions(github,ai,queue);
+            inputMapper.resetProbe();worker.retry(submission);UUID replacement=activeJob();
+            assertEquals(job,jobs.findById(replacement).orElseThrow().getRetryOf());
+            assertEquals(failed.getQuestionIds(),jobs.findById(replacement).orElseThrow().getQuestionIds());
+            if(kind.equals("EVIDENCE")) when(github.capture(eq(resolution),anyString(),any())).thenReturn(new GitHubEvidence(resolution,now,List.of(),List.of(),
+                    new GitHubEvidence.ContributorSnapshot(now,false,false,List.of()),List.of(),
+                    new GitHubEvidence.Bounds(16,32000,0,4000,8,1000,128,8192,65536,262144,2097152,100)));
+            assertEquals(204,http.post(replacement));assertEquals(QuestionnaireJobStatus.SUCCEEDED,jobs.findById(replacement).orElseThrow().getStatus());
+        }
+    }
+
+    @ParameterizedTest @ValueSource(strings={"EVIDENCE","GENERATE_MEMBER"})
+    void expiredOrReplacedLeaseDuringFrozenPreparationCannotInvokeProviderOrSave(String kind) throws Exception {
+        if(kind.equals("EVIDENCE")) finals.finalSubmit(party,leader,0L);else evidenceReady();
+        UUID job=activeJob();var quota=jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1");
+        clearInvocations(github,ai,queue);
+        try(var http=new WorkerHttp(worker,evaluation)) {
+            for(boolean replace:List.of(false,true)) {
+                clock.set(now);UUID replacement=UUID.randomUUID();
+                inputMapper.type=kind.equals("EVIDENCE")?GitHubEvidence.Resolution.class:GitHubEvidence.class;
+                inputMapper.afterRead=()->{
+                    assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+                    try {assertEquals(503,http.post(job));} catch(Exception e){throw new IllegalStateException(e);}
+                    if(replace) jdbc.update("UPDATE questionnaire_jobs SET lease_token=? WHERE id=?",replacement,job);
+                    else clock.set(now.plusSeconds(110));
+                };
+                assertEquals(503,http.post(job));
+                var pending=jobs.findById(job).orElseThrow();assertEquals(QuestionnaireJobStatus.RUNNING,pending.getStatus());
+                if(replace) assertEquals(replacement,pending.getLeaseToken());
+                assertEquals(0,pending.getAttempts());assertNull(pending.getLastErrorCode());
+                assertNull(snapshot().getOpensAt());assertNull(snapshot().getClosesAt());
+                assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM questionnaire_questions q JOIN questionnaire_assignments a ON a.id=q.assignment_id WHERE a.snapshot_id=?",Integer.class,snapshot().getId()));
+                assertEquals(quota,jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1"));
+                verify(github,never()).capture(any(),anyString(),any());verify(ai,never()).generate(any(),any(Runnable.class));
+                verifyNoInteractions(queue);
+                jdbc.update("UPDATE questionnaire_jobs SET lease_until=?::timestamptz WHERE id=?",now.minusSeconds(1).toString(),job);
+            }
+        }
     }
 
     @Test void freezesExactAcceptanceInputsAndRetainsOwnerAccessWithoutMembership() {
@@ -603,12 +696,77 @@ class QuestionnaireGenerationDatabaseIT {
         }
     }
 
+    static class PreparationMapper extends ObjectMapper {
+        volatile Class<?> type;
+        volatile Runnable afterRead=()->{};
+        volatile boolean inTransaction;
+        PreparationMapper(){findAndRegisterModules();}
+        void resetProbe(){type=null;afterRead=()->{};inTransaction=false;}
+        @Override public <T> T treeToValue(com.fasterxml.jackson.core.TreeNode node,Class<T> target) throws com.fasterxml.jackson.core.JsonProcessingException {
+            T result=super.treeToValue(node,target);
+            probe(target);return result;
+        }
+        @Override public <T> T convertValue(Object value,Class<T> target) {
+            T result=super.convertValue(value,target);
+            probe(target);return result;
+        }
+        void probe(Class<?> target) {
+            if(target==type) {
+                inTransaction=TransactionSynchronizationManager.isActualTransactionActive();
+                // Defer synthetic latency to commit to isolate the newly observed mutation-preparation failure.
+                if(inTransaction) TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override public void beforeCommit(boolean readOnly){afterRead.run();}
+                });
+                else afterRead.run();
+            }
+        }
+    }
+
+    @Configuration @org.springframework.web.servlet.config.annotation.EnableWebMvc
+    @Import({com.talentbridge.controller.AssessmentJobController.class,com.talentbridge.exception.GlobalExceptionHandler.class})
+    static class WorkerHttpConfig {}
+
+    static class WorkerHttp implements AutoCloseable {
+        final org.springframework.web.context.support.AnnotationConfigWebApplicationContext context=new org.springframework.web.context.support.AnnotationConfigWebApplicationContext();
+        final org.springframework.boot.web.server.WebServer server;
+        final ch.qos.logback.classic.Logger logger=(ch.qos.logback.classic.Logger)org.slf4j.LoggerFactory.getLogger(com.talentbridge.exception.GlobalExceptionHandler.class);
+        final ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> logs=new ch.qos.logback.core.read.ListAppender<>();
+        final boolean additive=logger.isAdditive();
+        WorkerHttp(QuestionnaireGenerationService generation,QuestionnaireEvaluationService evaluation) throws Exception {
+            context.register(WorkerHttpConfig.class);
+            context.addBeanFactoryPostProcessor(factory->{factory.registerSingleton("generation",generation);factory.registerSingleton("evaluation",evaluation);});
+            var factory=new org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory(0);
+            factory.setAddress(java.net.InetAddress.getByName("127.0.0.1"));
+            server=factory.getWebServer(servlet->{context.setServletContext(servlet);context.refresh();
+                servlet.addServlet("dispatcher",new org.springframework.web.servlet.DispatcherServlet(context)).addMapping("/");});
+            logs.start();logger.addAppender(logs);logger.setAdditive(false);server.start();
+        }
+        int post(UUID id) throws Exception {
+            var request=java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:"+server.getPort()+"/internal/assessment-jobs/"+id))
+                    .timeout(Duration.ofSeconds(15)).header("Content-Type","application/json")
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString("{\"jobId\":\""+id+"\"}")).build();
+            return java.net.http.HttpClient.newHttpClient().send(request,java.net.http.HttpResponse.BodyHandlers.discarding()).statusCode();
+        }
+        void assertCommitTimeout() {
+            var failure=logs.list.stream().map(ch.qos.logback.classic.spi.ILoggingEvent::getThrowableProxy).filter(Objects::nonNull).findFirst().orElseThrow();
+            assertEquals("org.springframework.orm.jpa.JpaSystemException",failure.getClassName());
+            assertEquals("org.hibernate.TransactionException",failure.getCause().getClassName());
+            assertTrue(failure.getCause().getMessage().contains("transaction timeout expired"));
+            var frames=Arrays.stream(failure.getCause().getStackTraceElementProxyArray()).map(Object::toString).toList();
+            assertTrue(frames.stream().anyMatch(f->f.contains("MutationStatementPreparer")));
+            assertTrue(frames.stream().anyMatch(f->f.contains("EntityUpdateAction")));
+            assertTrue(frames.stream().anyMatch(f->f.contains("flushBeforeTransactionCompletion")));
+            System.out.println("SECOND_CLAIM_CHAIN JpaSystemException/TransactionException mutationUpdateFlushCommit timeoutExpired=true");
+        }
+        @Override public void close(){server.stop();context.close();logger.detachAppender(logs);logger.setAdditive(additive);logs.stop();}
+    }
+
     @Configuration @Import({SubmissionService.class,QuestionnaireFinalSubmissionService.class,QuestionnaireGenerationService.class,QuestionnaireService.class,
             QuestionnaireEvaluationService.class,ScorecardService.class})
     static class Config {
         @Bean static ProfileFetchProbe profileFetchProbe(){return new ProfileFetchProbe();}
         @Bean MutableClock clock(){return new MutableClock();}
-        @Bean ObjectMapper mapper(){return new ObjectMapper().findAndRegisterModules();}
+        @Bean PreparationMapper mapper(){return new PreparationMapper();}
         @Bean AssessmentTaskQueue queue(){return mock(AssessmentTaskQueue.class);}
         @Bean AssessmentAIService ai(){return mock(AssessmentAIService.class);}
         @Bean GitHubEvidenceService github(){return mock(GitHubEvidenceService.class);}
