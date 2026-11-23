@@ -82,7 +82,7 @@ class AssessmentAIServiceTest {
         for (int i = 0; i < 5; i++) {
             var q = questions.addObject(); q.put("id", ids.get(i).toString()); q.put("prompt", prompts.get(i));
             q.put("rubric", "Identify the actual Engine behavior and justify its boundary conditions.");
-            q.putArray("sourceReferences").addObject().put("path", "src/Engine.java").put("startLine", 1).put("endLine", 2);
+            q.putArray("sourceReferenceIds").add(1);
         }
         return root;
     }
@@ -123,7 +123,29 @@ class AssessmentAIServiceTest {
         assertEquals(8192, request.get().path("maxTokens").intValue());
         assertEquals("questionnaire_evaluation", request.get().path("operation").textValue());
     }
-    @ParameterizedTest @ValueSource(strings = {"missing", "extra", "duplicate", "near", "reference", "hidden", "id", "type", "nul", "surrogate", "trailing", "keys", "fence"})
+    @Test void onlySourceExcerptsGetIdsAndSelectedIdsResolveToTheirFrozenRanges() throws Exception {
+        var e=evidence();
+        var mixed=new GitHubEvidence(e.resolution(),e.capturedAt(),e.paths(),List.of(
+                new FileEvidence(Kind.README,"README.md","c".repeat(40),"d".repeat(64),12,1,1,1,"Instructions",false),
+                e.files().get(0),
+                new FileEvidence(Kind.SOURCE,"src/Store.java","e".repeat(40),"f".repeat(64),48,28,17,18,"void save() {\n}\n",true)),
+                e.contributors(),e.omissions(),e.bounds());
+        var prepared=service.prepareGeneration("Build a safe Engine",mixed,member,ids,List.of());
+        var generated=generation();
+        for(var q:generated.path("questions")) ((ObjectNode)q).putArray("sourceReferenceIds").add(2).add(3);
+        reply.set(generated.toString());
+        assertEquals(List.of(new SourceReference("src/Engine.java",1,2),new SourceReference("src/Store.java",17,18)),
+                service.generate(prepared).questions().get(0).sourceReferences());
+        var files=mapper.readTree(request.get().path("message").textValue()).path("files");
+        assertFalse(files.get(0).has("sourceReferenceId"));
+        assertEquals(2,files.get(1).path("sourceReferenceId").intValue());
+        assertEquals(3,files.get(2).path("sourceReferenceId").intValue());
+        assertTrue(request.get().path("system").textValue().contains("sourceReferenceIds"));
+        for(var q:generated.path("questions")) ((ObjectNode)q).putArray("sourceReferenceIds").add(1);
+        reply.set(generated.toString());
+        assertEquals(ReplyCheck.GENERATION_REFERENCES,assertThrows(AssessmentException.class,()->service.generate(prepared)).replyCheck());
+    }
+    @ParameterizedTest @ValueSource(strings = {"missing", "extra", "duplicate", "near", "reference", "hidden", "duplicateReference", "stringReference", "emptyReferences", "id", "type", "nul", "surrogate", "trailing", "keys", "fence"})
     void rejectsMalformedGenerationInsteadOfPublishing(String mutation) {
         var body = generation(); var qs = (com.fasterxml.jackson.databind.node.ArrayNode) body.get("questions");
         var q = (ObjectNode) qs.get(0);
@@ -132,8 +154,11 @@ class AssessmentAIServiceTest {
             case "extra" -> qs.add(q.deepCopy());
             case "duplicate" -> ((ObjectNode) qs.get(1)).put("prompt", prompts.get(0));
             case "near" -> ((ObjectNode) qs.get(1)).put("prompt", prompts.get(0).toUpperCase() + "!");
-            case "reference" -> ((ObjectNode) q.path("sourceReferences").get(0)).put("endLine", 3);
-            case "hidden" -> ((ObjectNode) q.path("sourceReferences").get(0)).put("rubric", "secret");
+            case "reference" -> q.putArray("sourceReferenceIds").add(3);
+            case "hidden" -> q.putArray("sourceReferenceIds").addObject().put("path", "src/Engine.java").put("startLine",1).put("endLine",3);
+            case "duplicateReference" -> q.putArray("sourceReferenceIds").add(1).add(1);
+            case "stringReference" -> q.putArray("sourceReferenceIds").add("1");
+            case "emptyReferences" -> q.putArray("sourceReferenceIds");
             case "id" -> q.put("id", UUID.randomUUID().toString());
             case "type" -> q.put("prompt", 17);
             case "nul" -> q.put("rubric", "bad\0value");
@@ -150,7 +175,7 @@ class AssessmentAIServiceTest {
         assertEquals(switch (mutation) {
             case "missing","extra" -> ReplyCheck.GENERATION_SHAPE;
             case "duplicate","near" -> ReplyCheck.GENERATION_DUPLICATE;
-            case "reference","hidden" -> ReplyCheck.GENERATION_REFERENCES;
+            case "reference","hidden","duplicateReference","stringReference","emptyReferences" -> ReplyCheck.GENERATION_REFERENCES;
             case "id" -> ReplyCheck.GENERATION_IDENTITY;
             case "type","nul" -> ReplyCheck.GENERATION_TEXT;
             case "surrogate" -> ReplyCheck.RELAY_ENVELOPE;
@@ -321,6 +346,7 @@ class AssessmentAIServiceTest {
         assertEquals(63999,input.get().get(0).length()+input.get().get(1).length());
         var base=(ObjectNode)assertDoesNotThrow(()->mapper.readTree(input.get().get(1)));
         base.remove(List.of("memberId","questionIds","priorPrompts"));
+        base.path("files").forEach(file -> ((ObjectNode)file).remove("sourceReferenceId"));
         int baseLength=base.toString().length();assertTrue(baseLength<64000);
         String boundedBrief=brief;
         assertDoesNotThrow(()->service.prepareQuestionnaireBatch(boundedBrief,evidence,List.of(atomic)));
