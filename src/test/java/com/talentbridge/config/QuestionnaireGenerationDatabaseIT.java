@@ -11,11 +11,18 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.*;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DelegatingDataSource;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.web.server.ResponseStatusException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -29,6 +36,7 @@ import static org.mockito.ArgumentMatchers.*;
 @TestPropertySource(properties = {"jwt.secret=synthetic-questionnaire-integration-signing-key-not-production",
         "jwt.expiration-ms=60000", "jwt.refresh-expiration-ms=120000", "app.questionnaire-enabled=true"})
 class QuestionnaireGenerationDatabaseIT {
+    private static final long REVIEW_READ_DELAY_MS=750;
     @Autowired QuestionnaireGenerationService worker;
     @Autowired QuestionnaireEvaluationService evaluation;
     @Autowired ProfileFetchProbe profileFetchProbe;
@@ -97,6 +105,68 @@ class QuestionnaireGenerationDatabaseIT {
         assertEquals(409,submitHttp(leader,0)); assertSupervisorNotices();
         verify(github,times(1)).resolveRepository(anyString(),any(),any()); verify(queue,times(1)).enqueue(any(),eq(0),eq(now));
         verifyNoInteractions(ai,legacyNotifications);
+    }
+
+    @Test void reviewHttpStaysWithinBudgetWithoutSerialEntityReads() throws Exception {
+        try(var http=new WorkerHttp(worker,evaluation,drafts,finals)) {
+            assertEquals(404,http.review(submission).statusCode());
+            assertEquals(404,http.review(UUID.randomUUID()).statusCode());
+            finals.finalSubmit(party,leader,0L);
+            UUID snapshotId=snapshot().getId();
+            UUID assignment=assignments.findAllBySnapshotId(snapshotId).stream()
+                    .filter(a->a.getStudentId().equals(leader)).findFirst().orElseThrow().getId();
+            jdbc.update("UPDATE questionnaire_assignments SET answers=CAST(? AS jsonb) WHERE id=?",
+                    inputMapper.writeValueAsString(Map.of("empty","","blank"," \t\n\u001c\u2003",
+                            "nbsp","\u00a0","figureSpace","\u2007","answer","private answer")),assignment);
+            jdbc.update("""
+                    INSERT INTO questionnaire_questions(assignment_id,position,prompt,source_references,hidden_rubric)
+                    VALUES (?,1,'private prompt','[]','private rubric')
+                    """,assignment);
+            UUID first=jobs.findAllBySnapshotIdOrderByCreatedAtAsc(snapshotId).get(0).getId();
+            UUID retry=UUID.randomUUID();
+            jdbc.update("UPDATE questionnaire_jobs SET created_at='2026-11-20 00:00:00' WHERE id=?",first);
+            jdbc.update("""
+                    INSERT INTO questionnaire_jobs(id,snapshot_id,job_key,kind,status,attempts,dispatch_generation,
+                                                   next_attempt_at,lease_token,lease_until,last_error_code,retry_of,created_at)
+                    VALUES (?,?,?,'EVIDENCE','RUNNING',2,3,'2026-11-21T12:00:00Z',?,
+                            '2026-11-21T12:00:30Z','SYNTHETIC',?,'2026-11-21 00:00:00')
+                    """,retry,snapshotId,retry.toString(),UUID.randomUUID(),first);
+            java.net.http.HttpResponse<String> response;
+            long start=System.nanoTime();
+            profileFetchProbe.reviewReads.clear();
+            profileFetchProbe.reviewLatency=true;
+            try { response=http.review(submission); }
+            finally { profileFetchProbe.reviewLatency=false; }
+            long elapsedMs=TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start);
+            System.out.println("REVIEW_HTTP status="+response.statusCode()+" elapsedMs="+elapsedMs+
+                    " delayedReads="+profileFetchProbe.reviewReads.size()+
+                    " failure="+http.logs.list.stream().map(e->e.getThrowableProxy()).filter(Objects::nonNull)
+                            .map(e->e.getClassName()+": "+e.getMessage()).toList());
+            assertEquals(200,response.statusCode());
+            assertEquals(1,profileFetchProbe.reviewReads.size(),"Review must execute exactly one delayed SQL read");
+            var read=profileFetchProbe.reviewReads.element();
+            assertTrue(read.sql().stripLeading().startsWith("SELECT"));
+            assertTrue(read.inTransaction() && read.timeoutSeconds()>0 && read.timeoutSeconds()<=2,
+                    "Review SELECT must run within the two-second transaction budget");
+            assertTrue(elapsedMs>=REVIEW_READ_DELAY_MS,"Review did not incur the injected SQL delay");
+            assertTrue(elapsedMs<2000,"Review HTTP request took "+elapsedMs+" ms");
+            assertEquals("no-store",response.headers().firstValue("Cache-Control").orElseThrow());
+            var review=inputMapper.readValue(response.body(),QuestionnaireGenerationService.Review.class);
+            assertEquals(submission,review.submissionId());
+            assertEquals("Frozen project",review.projectTitle());
+            assertEquals(QuestionnaireState.GENERATING,review.state());
+            assertNull(review.opensAt()); assertNull(review.closesAt()); assertEquals(now,review.serverNow());
+            assertEquals(2,review.members().size());
+            assertTrue(review.members().stream().anyMatch(m->m.assignmentId().equals(assignment) &&
+                    m.studentId().equals(leader) && m.questionCount()==1 && m.answeredCount()==3));
+            assertTrue(review.members().stream().anyMatch(m->m.studentId().equals(member) && m.questionCount()==0 && m.answeredCount()==0));
+            assertEquals(List.of(first,retry),review.jobs().stream().map(QuestionnaireGenerationService.Job::id).toList());
+            assertEquals(new QuestionnaireGenerationService.Job(retry,first,QuestionnaireJobKind.EVIDENCE,
+                    QuestionnaireJobStatus.RUNNING,2,3,now,now.plusSeconds(30),"SYNTHETIC"),review.jobs().get(1));
+            assertFalse(response.body().contains("private"));
+            jdbc.update("UPDATE questionnaire_snapshots SET assessment_version=1 WHERE id=?",snapshotId);
+            assertEquals(404,http.review(submission).statusCode());
+        }
     }
 
     @ParameterizedTest @ValueSource(strings={"stale","nonLeader","expired"})
@@ -691,14 +761,48 @@ class QuestionnaireGenerationDatabaseIT {
     }
     static class ProfileFetchProbe implements org.springframework.beans.factory.config.BeanPostProcessor,org.hibernate.resource.jdbc.spi.StatementInspector {
         volatile boolean active;
+        volatile boolean reviewLatency;
+        final Queue<ReviewRead> reviewReads=new ConcurrentLinkedQueue<>();
         final Set<String> tables=ConcurrentHashMap.newKeySet();
         final java.util.concurrent.atomic.AtomicBoolean delayed=new java.util.concurrent.atomic.AtomicBoolean();
         void start(){tables.clear();delayed.set(false);active=true;}
         @Override public Object postProcessBeforeInitialization(Object bean,String name) {
             if(bean instanceof org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean factory)
                 factory.getJpaPropertyMap().put("hibernate.session_factory.statement_inspector",this);
+            if(bean instanceof DataSource dataSource) return new DelegatingDataSource(dataSource) {
+                @Override public Connection getConnection() throws SQLException {
+                    var connection=super.getConnection();
+                    return reviewLatency?reviewConnection(connection):connection;
+                }
+            };
             return bean;
         }
+        private Connection reviewConnection(Connection connection) {
+            return (Connection)Proxy.newProxyInstance(getClass().getClassLoader(),new Class<?>[]{Connection.class},
+                    (proxy,method,args)->{
+                        Object result=invoke(connection,method,args);
+                        if(method.getName().equals("prepareStatement") && result instanceof PreparedStatement statement)
+                            return reviewStatement(statement,(String)args[0]);
+                        return result;
+                    });
+        }
+        private PreparedStatement reviewStatement(PreparedStatement statement,String sql) {
+            return (PreparedStatement)Proxy.newProxyInstance(getClass().getClassLoader(),new Class<?>[]{PreparedStatement.class},
+                    (proxy,method,args)->{
+                        if(!method.getName().startsWith("execute")) return invoke(statement,method,args);
+                        // Delay actual execution equally for Hibernate and JdbcTemplate, without replacing PostgreSQL.
+                        var read=new ReviewRead(sql,TransactionSynchronizationManager.isActualTransactionActive(),statement.getQueryTimeout());
+                        Thread.sleep(REVIEW_READ_DELAY_MS);
+                        Object result=invoke(statement,method,args);
+                        reviewReads.add(read);
+                        return result;
+                    });
+        }
+        private static Object invoke(Object target,Method method,Object[] args) throws Throwable {
+            try { return method.invoke(target,args); }
+            catch(InvocationTargetException failure){throw failure.getCause();}
+        }
+        record ReviewRead(String sql,boolean inTransaction,int timeoutSeconds) {}
         @Override public String inspect(String sql) {
             if(!active || !sql.contains("_profiles") || !StackWalker.getInstance().walk(frames->frames.anyMatch(frame->
                     frame.getClassName().equals(QuestionnaireGenerationService.class.getName()) && frame.getMethodName().equals("claim")))) return sql;
@@ -851,13 +955,26 @@ class QuestionnaireGenerationDatabaseIT {
         final ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> logs=new ch.qos.logback.core.read.ListAppender<>();
         final boolean additive=logger.isAdditive();
         WorkerHttp(QuestionnaireGenerationService generation,QuestionnaireEvaluationService evaluation) throws Exception {
+            this(generation,evaluation,null,null);
+        }
+        WorkerHttp(QuestionnaireGenerationService generation,QuestionnaireEvaluationService evaluation,
+                   SubmissionService drafts,QuestionnaireFinalSubmissionService finals) throws Exception {
             context.register(WorkerHttpConfig.class);
-            context.addBeanFactoryPostProcessor(factory->{factory.registerSingleton("generation",generation);factory.registerSingleton("evaluation",evaluation);});
+            if(drafts!=null) context.register(com.talentbridge.controller.SubmissionController.class);
+            context.addBeanFactoryPostProcessor(factory->{
+                factory.registerSingleton("generation",generation);factory.registerSingleton("evaluation",evaluation);
+                if(drafts!=null) {factory.registerSingleton("drafts",drafts);factory.registerSingleton("finals",finals);}
+            });
             var factory=new org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory(0);
             factory.setAddress(java.net.InetAddress.getByName("127.0.0.1"));
             server=factory.getWebServer(servlet->{context.setServletContext(servlet);context.refresh();
                 servlet.addServlet("dispatcher",new org.springframework.web.servlet.DispatcherServlet(context)).addMapping("/");});
             logs.start();logger.addAppender(logs);logger.setAdditive(false);server.start();
+        }
+        java.net.http.HttpResponse<String> review(UUID submissionId) throws Exception {
+            var request=java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:"+server.getPort()
+                    +"/api/submissions/"+submissionId+"/questionnaire-review")).timeout(Duration.ofSeconds(15)).GET().build();
+            return java.net.http.HttpClient.newHttpClient().send(request,java.net.http.HttpResponse.BodyHandlers.ofString());
         }
         int post(UUID id) throws Exception {
             var request=java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:"+server.getPort()+"/internal/assessment-jobs/"+id))
