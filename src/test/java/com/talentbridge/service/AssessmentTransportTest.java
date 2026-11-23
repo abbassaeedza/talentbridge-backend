@@ -52,10 +52,19 @@ class AssessmentTransportTest {
         ReflectionTestUtils.setField(service,"n8nWebhookUrl","http://127.0.0.1:12345/relay");
         var evaluation=service.prepareAssessment("questionnaire_evaluation","s","m");
         doAnswer(call -> {
-            assertEquals(Duration.ofSeconds(90),((HttpRequest)call.getArgument(0)).timeout().orElseThrow()); throw new HttpTimeoutException("SENSITIVE");
+            assertEquals(Duration.ofSeconds(85),((HttpRequest)call.getArgument(0)).timeout().orElseThrow()); throw new HttpTimeoutException("SENSITIVE");
         }).when(client).send(any(),any());
         var failure=assertThrows(AssessmentException.class, () -> service.executeAssessment(evaluation));
         assertEquals("RELAY_FAILURE",failure.getMessage()); assertNull(failure.getCause());
+    }
+    @Test void explicitlyShorterEvaluationTimeoutIsPreserved() throws Exception {
+        ReflectionTestUtils.setField(service,"evaluationTimeoutSeconds",70);
+        var request=service.prepareAssessment("questionnaire_evaluation","s","m");
+        when(client.send(any(),any())).thenAnswer(call -> {
+            assertEquals(Duration.ofSeconds(70),((HttpRequest)call.getArgument(0)).timeout().orElseThrow());
+            throw new HttpTimeoutException("SENSITIVE");
+        });
+        assertEquals("RELAY_FAILURE",assertThrows(AssessmentException.class,()->service.executeAssessment(request)).getMessage());
     }
     @ParameterizedTest @ValueSource(strings={"", "http://external.invalid/relay", "https://user:password@example.invalid/relay", "not a URI"})
     void rejectsInvalidRelayWithoutDirectFallback(String url) {

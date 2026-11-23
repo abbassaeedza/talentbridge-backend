@@ -77,6 +77,8 @@ public class OpenAIService {
         validText(system, 1, cap, "INVALID_INPUT"); validText(message, 1, cap, "INVALID_INPUT");
         int seconds = generation ? generationTimeoutSeconds : evaluationTimeoutSeconds;
         require(seconds >= 1 && seconds <= (generation ? 60 : 90), "INVALID_RELAY_CONFIGURATION");
+        // Keep time to record the evaluation result or failure before the task's 115-second deadline.
+        int requestSeconds = generation ? seconds : Math.min(seconds,85);
         require(n8nWebhookUrl != null && !n8nWebhookUrl.isBlank() && n8nWebhookSecret != null
                 && !n8nWebhookSecret.isBlank() && ("gpt-4o".equals(evalModel) || "gpt-4o-mini".equals(evalModel)), "INVALID_RELAY_CONFIGURATION");
         try {
@@ -85,7 +87,7 @@ public class OpenAIService {
                     && ("https".equals(uri.getScheme()) || ("http".equals(uri.getScheme())
                     && ("127.0.0.1".equals(uri.getHost()) || "localhost".equals(uri.getHost())))), "INVALID_RELAY_CONFIGURATION");
             ObjectNode body = relayBody(operation, evalModel, system, message, null, generation ? 4096 : 8192);
-            return new PreparedAssessment(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(seconds))
+            return new PreparedAssessment(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(requestSeconds))
                     .header("X-TB-Secret", n8nWebhookSecret).header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body))).build());
         } catch (AssessmentException e) { throw e; }
