@@ -258,8 +258,7 @@ public class AssessmentAIService {
 
     private JsonNode call(OpenAIService.PreparedAssessment request, Runnable beforeAttempt) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) throw new IllegalStateException("Assessment calls require a nontransactional caller");
-        quota.reserve();
-        beforeAttempt.run();
+        quota.reserve(beforeAttempt);
         String response=transport.executeAssessment(request);
         try { return json.readTree(response); } catch (Exception e) { throw new AssessmentException("INVALID_RESPONSE"); }
     }

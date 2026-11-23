@@ -24,8 +24,11 @@ public class AssessmentQuotaService {
         transactions.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         transactions.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED); transactions.setTimeout(5);
     }
-    /** Charge immediately before the provider attempt; failures are not refunded. */
     public void reserve() {
+        reserve(() -> {});
+    }
+    /** Authorize quota and durable attempt together; failures after commit are not refunded. */
+    public void reserve(Runnable beforeAttempt) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) throw new IllegalStateException("Assessment quota requires a nontransactional caller");
         try {
             transactions.executeWithoutResult(status -> {
@@ -37,6 +40,8 @@ public class AssessmentQuotaService {
                 int used=today.equals(stored.day())?stored.count():0;
                 if (used>=allowance) throw new QuotaExceeded(today.plusDays(1).atStartOfDay(KARACHI).toInstant());
                 jdbc.update("UPDATE assessment_ai_quota SET quota_day=?,attempt_count=? WHERE id=1",today,used+1);
+                // Quota precedes the snapshot lock; callback failure must roll both authorizations back.
+                beforeAttempt.run();
             });
         } catch (DataAccessException | TransactionException e) {
             throw new AssessmentAIService.AssessmentException("QUOTA_UNAVAILABLE");

@@ -485,7 +485,7 @@ class QuestionnaireGenerationDatabaseIT {
         LocalDate stored=jdbc.queryForObject("SELECT quota_day FROM assessment_ai_quota WHERE id=1",java.sql.Date.class).toLocalDate();
         clock.set(clock.instant().isAfter(stored.plusDays(1).atStartOfDay(ZoneId.of("Asia/Karachi")).toInstant())?clock.instant():stored.plusDays(1).atStartOfDay(ZoneId.of("Asia/Karachi")).toInstant());
         var quota=new AssessmentQuotaService(jdbc,transactions,clock,50);
-        doAnswer(c->{quota.reserve();((Runnable)c.getArgument(1)).run();throw new AssessmentAIService.AssessmentException("RELAY_FAILURE");}).when(ai).generate(any(),any(Runnable.class));
+        doAnswer(c->{quota.reserve(c.getArgument(1));throw new AssessmentAIService.AssessmentException("RELAY_FAILURE");}).when(ai).generate(any(),any(Runnable.class));
         httpDeliver(target);var ids=List.copyOf(jobs.findById(target).orElseThrow().getQuestionIds());assertEquals(5,ids.size());
         var charged=jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1");
         var history=jdbc.queryForList("SELECT attempt,outcome,started_at,finished_at FROM questionnaire_job_attempts WHERE job_id=? ORDER BY attempt",target);
@@ -507,6 +507,20 @@ class QuestionnaireGenerationDatabaseIT {
         assertEquals(ids,jobs.findById(replacement).orElseThrow().getQuestionIds());httpDeliver(replacement);
         assertNotNull(snapshot().getOpensAt());assertEquals(history,jdbc.queryForList("SELECT attempt,outcome,started_at,finished_at FROM questionnaire_job_attempts WHERE job_id=? ORDER BY attempt",target));
         assertTrue(jdbc.queryForList("SELECT q.id FROM questionnaire_questions q JOIN questionnaire_assignments a ON a.id=q.assignment_id WHERE a.snapshot_id=?",UUID.class,snapshot().getId()).containsAll(saved.stream().map(row->(UUID)row.get("id")).toList()));
+    }
+
+    @ParameterizedTest @ValueSource(strings={"expired","callbackFailure","commitFailure","denied","success","providerFailure"})
+    void atomicQuotaAndGenerationAttemptThroughRealHttp(String mode) throws Exception {
+        evidenceReady(); UUID target=activeJob();
+        try(var probe=new AtomicQuotaProbe(source,transactions,clock,clock::set,ai,mode);
+            var http=new WorkerHttp(worker,evaluation)) {
+            int status=http.post(target);
+            System.out.println("ATOMIC_QUOTA generation mode="+mode+" http="+status+" used="+probe.used()+" attempts="+jobs.findById(target).orElseThrow().getAttempts()+" provider="+probe.calls.get());
+            assertEquals(mode.equals("expired")?503:204,status);
+            probe.assertAccounting(target);
+            if(mode.equals("success")) assertEquals(QuestionnaireJobStatus.SUCCEEDED,jobs.findById(target).orElseThrow().getStatus());
+            assertNull(snapshot().getOpensAt()); assertNull(snapshot().getClosesAt());
+        }
     }
 
     void httpDeliver(UUID id) throws Exception {
@@ -719,6 +733,110 @@ class QuestionnaireGenerationDatabaseIT {
                 });
                 else afterRead.run();
             }
+        }
+    }
+
+    static class AtomicQuotaProbe implements AutoCloseable {
+        final JdbcTemplate jdbc;
+        final Map<String,Object> previous;
+        final String mode,trigger="quota_atomic_"+UUID.randomUUID().toString().replace("-","");
+        final java.util.concurrent.atomic.AtomicInteger calls=new java.util.concurrent.atomic.AtomicInteger();
+        final AtomicReference<Throwable> relayFailure=new AtomicReference<>();
+        final AtomicReference<String> reply=new AtomicReference<>("{}");
+        final com.sun.net.httpserver.HttpServer relay;
+        AtomicQuotaProbe(DataSource source,PlatformTransactionManager manager,Clock clock,java.util.function.Consumer<Instant> advance,
+                         AssessmentAIService ai,String mode) throws Exception {
+            var json=new ObjectMapper().findAndRegisterModules();
+            this.mode=mode;jdbc=new JdbcTemplate(source);
+            previous=jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1");
+            relay=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
+            try {
+            jdbc.update("UPDATE assessment_ai_quota SET quota_day=?,attempt_count=? WHERE id=1",clock.instant().atZone(ZoneId.of("Asia/Karachi")).toLocalDate(),mode.equals("denied")?50:0);
+            JdbcTemplate quotaJdbc=new JdbcTemplate(source) {
+                @Override public <T> List<T> query(String sql,org.springframework.jdbc.core.RowMapper<T> mapper) {
+                    var result=super.query(sql,mapper);
+                    if(mode.equals("expired")) advance.accept(clock.instant().plusSeconds(110));
+                    return result;
+                }
+            };
+            if(mode.equals("callbackFailure") || mode.equals("commitFailure")) {
+                jdbc.execute("CREATE FUNCTION "+trigger+"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'SYNTHETIC_ATTEMPT_FAILURE'; END $$");
+                jdbc.execute("CREATE "+(mode.equals("commitFailure")?"CONSTRAINT ":"")+"TRIGGER "+trigger+" AFTER INSERT ON questionnaire_job_attempts "
+                        +(mode.equals("commitFailure")?"DEFERRABLE INITIALLY DEFERRED ":"")+"FOR EACH ROW EXECUTE FUNCTION "+trigger+"()");
+            }
+            relay.createContext("/relay",exchange->{
+                calls.incrementAndGet();
+                try {
+                    assertEquals(1,used());
+                    jdbc.queryForObject("SELECT id FROM assessment_ai_quota WHERE id=1 FOR UPDATE NOWAIT",Integer.class);
+                    var started=jdbc.queryForList("SELECT j.snapshot_id,j.id FROM questionnaire_jobs j JOIN questionnaire_job_attempts a ON a.job_id=j.id WHERE a.outcome='STARTED'");
+                    assertEquals(1,started.size());
+                    jdbc.queryForObject("SELECT id FROM questionnaire_snapshots WHERE id=? FOR UPDATE NOWAIT",UUID.class,started.get(0).get("snapshot_id"));
+                    assertEquals(1,jdbc.queryForObject("SELECT attempts FROM questionnaire_jobs WHERE id=?",Integer.class,started.get(0).get("id")));
+                } catch(Throwable failure) {relayFailure.set(failure);}
+                byte[] body=json.writeValueAsBytes(Map.of("message",reply.get()));
+                exchange.sendResponseHeaders(mode.equals("providerFailure")?502:200,body.length);
+                exchange.getResponseBody().write(body);exchange.close();
+            });relay.start();
+            var transport=new OpenAIService(json);
+            org.springframework.test.util.ReflectionTestUtils.setField(transport,"n8nWebhookUrl","http://127.0.0.1:"+relay.getAddress().getPort()+"/relay");
+            org.springframework.test.util.ReflectionTestUtils.setField(transport,"n8nWebhookSecret","synthetic-local-only");
+            org.springframework.test.util.ReflectionTestUtils.setField(transport,"evalModel","gpt-4o");
+            var real=new AssessmentAIService(json,transport,new AssessmentQuotaService(quotaJdbc,manager,clock,50),new GitHubEvidenceService(json));
+            doAnswer(c->{
+                assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+                UUID member=c.getArgument(2);List<UUID> ids=c.getArgument(3);
+                var root=json.createObjectNode();root.put("memberId",member.toString());var questions=root.putArray("questions");
+                var prompts=List.of("Explain how Engine validates a submitted revision before writing data.",
+                        "Why does Engine acquire a row lock before reading the server clock?",
+                        "Describe rollback behavior when an insert fails after updating its counter.",
+                        "How would simultaneous saves for the same assignment be handled?",
+                        "Which boundary values test publication deadlines and why?");
+                for(int i=0;i<5;i++) {
+                    var q=questions.addObject();q.put("id",ids.get(i).toString());q.put("prompt",prompts.get(i));q.put("rubric","Explain the actual Engine boundary.");
+                    q.putArray("sourceReferences").addObject().put("path","src/Engine.java").put("startLine",1).put("endLine",2);
+                }
+                reply.set(root.toString());
+                return real.prepareGeneration(c.getArgument(0),c.getArgument(1),member,ids,c.getArgument(4));
+            }).when(ai).prepareGeneration(anyString(),any(),any(),anyList(),anyList());
+            doAnswer(c->real.generate(c.getArgument(0),c.getArgument(1))).when(ai).generate(any(),any(Runnable.class));
+            doAnswer(c->real.prepareRepositoryEvaluation(c.getArgument(0),c.getArgument(1))).when(ai).prepareRepositoryEvaluation(anyString(),any());
+            doAnswer(c->real.prepareQuestionnaireBatches(c.getArgument(0),c.getArgument(1),c.getArgument(2))).when(ai).prepareQuestionnaireBatches(anyString(),any(),anyList());
+            Map<AssessmentAIService.PreparedQuestionnaireEvaluation,String> responses=new IdentityHashMap<>();
+            doAnswer(c->{
+                assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+                var prepared=real.prepareQuestionnaireBatch(c.getArgument(0),c.getArgument(1),c.getArgument(2));
+                List<AssessmentAIService.MemberAnswers> members=c.getArgument(2);var root=json.createObjectNode();var output=root.putArray("members");
+                for(var member:members) {
+                    var m=output.addObject();m.put("memberId",member.memberId().toString());var questions=m.putArray("questions");
+                    for(var q:member.questions()) questions.addObject().put("id",q.id().toString()).put("mark",14).put("feedback","Explains the frozen implementation.");
+                }
+                responses.put(prepared,root.toString());return prepared;
+            }).when(ai).prepareQuestionnaireBatch(anyString(),any(),anyList());
+            doAnswer(c->{
+                var root=json.createObjectNode();var repo=root.putObject("repository");
+                for(String key:List.of("authenticity","quality","functionality","scope","collaboration")) repo.putObject(key).put("score",84).put("notes","Bounded frozen evidence.");
+                reply.set(root.toString());return real.evaluateRepository(c.getArgument(0),c.getArgument(1));
+            }).when(ai).evaluateRepository(any(),any(Runnable.class));
+            doAnswer(c->{reply.set(responses.get(c.getArgument(0)));return real.evaluateQuestionnaire(c.getArgument(0),c.getArgument(1));})
+                    .when(ai).evaluateQuestionnaire(any(),any(Runnable.class));
+            } catch(Exception | Error failure) {close();throw failure;}
+        }
+        int used(){return jdbc.queryForObject("SELECT attempt_count FROM assessment_ai_quota WHERE id=1",Integer.class);}
+        void assertAccounting(UUID job) {
+            boolean called=mode.equals("success") || mode.equals("providerFailure");
+            assertEquals(called?1:0,calls.get());assertNull(relayFailure.get(),()->String.valueOf(relayFailure.get()));
+            assertEquals(called?1:0,jdbc.queryForObject("SELECT attempts FROM questionnaire_jobs WHERE id=?",Integer.class,job));
+            assertEquals(called?1:0,jdbc.queryForObject("SELECT count(*) FROM questionnaire_job_attempts WHERE job_id=?",Integer.class,job));
+            assertEquals(mode.equals("denied")?50:called?1:0,used());
+            if(called) assertEquals(mode.equals("success")?"SUCCEEDED":"FAILED",jdbc.queryForObject("SELECT outcome FROM questionnaire_job_attempts WHERE job_id=?",String.class,job));
+        }
+        @Override public void close() {
+            relay.stop(0);
+            if(mode.equals("callbackFailure") || mode.equals("commitFailure")) {
+                jdbc.execute("DROP TRIGGER IF EXISTS "+trigger+" ON questionnaire_job_attempts");jdbc.execute("DROP FUNCTION IF EXISTS "+trigger+"()");
+            }
+            jdbc.update("UPDATE assessment_ai_quota SET quota_day=?,attempt_count=? WHERE id=1",previous.get("quota_day"),previous.get("attempt_count"));
         }
     }
 

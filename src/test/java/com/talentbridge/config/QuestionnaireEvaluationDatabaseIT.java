@@ -422,7 +422,7 @@ class QuestionnaireEvaluationDatabaseIT {
         LocalDate stored=jdbc.queryForObject("SELECT quota_day FROM assessment_ai_quota WHERE id=1",java.sql.Date.class).toLocalDate();
         clock.set(clock.instant().isAfter(stored.plusDays(1).atStartOfDay(ZoneId.of("Asia/Karachi")).toInstant())?clock.instant():stored.plusDays(1).atStartOfDay(ZoneId.of("Asia/Karachi")).toInstant());
         var quota=new AssessmentQuotaService(jdbc,transactions,clock,50);
-        doAnswer(c->{quota.reserve();((Runnable)c.getArgument(1)).run();throw new AssessmentAIService.AssessmentException("RELAY_FAILURE");})
+        doAnswer(c->{quota.reserve(c.getArgument(1));throw new AssessmentAIService.AssessmentException("RELAY_FAILURE");})
                 .when(ai).evaluateQuestionnaire(any(),any(Runnable.class));
         httpDeliver(target);assertEquals(1,service.run(run.id()).steps().get(2).attempts());
         var charged=jdbc.queryForMap("SELECT quota_day,attempt_count FROM assessment_ai_quota WHERE id=1");
@@ -442,7 +442,7 @@ class QuestionnaireEvaluationDatabaseIT {
         clearInvocations(ai);
         doAnswer(c->{var prepared=mock(AssessmentAIService.PreparedQuestionnaireEvaluation.class);preparedMembers.put(prepared,List.copyOf(c.getArgument(2)));return prepared;})
                 .when(ai).prepareQuestionnaireBatch(anyString(),any(),anyList());
-        doAnswer(c->{quota.reserve();((Runnable)c.getArgument(1)).run();return marks(c.getArgument(0),14,16);}).when(ai).evaluateQuestionnaire(any(),any(Runnable.class));
+        doAnswer(c->{quota.reserve(c.getArgument(1));return marks(c.getArgument(0),14,16);}).when(ai).evaluateQuestionnaire(any(),any(Runnable.class));
         var recovered=service.retry(run.id());UUID replacement=recovered.steps().get(2).jobId();assertNotEquals(target,replacement);
         assertEquals(target,jdbc.queryForObject("SELECT retry_of FROM questionnaire_jobs WHERE id=?",UUID.class,replacement));
         httpDeliver(replacement);assertEquals("REVIEW",service.run(run.id()).status());
@@ -637,6 +637,23 @@ class QuestionnaireEvaluationDatabaseIT {
         long end=System.nanoTime()+TimeUnit.SECONDS.toNanos(1);int blocked=0;
         while(blocked==0 && System.nanoTime()<end) blocked=jdbc.queryForObject("SELECT count(*) FROM pg_stat_activity WHERE usename=current_user AND wait_event_type='Lock' AND "+(advisory?"wait_event='advisory'":"wait_event<>'advisory'"),Integer.class);
         assertTrue(blocked>0,"Expected the real PostgreSQL lock wait");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"REPOSITORY,expired","REPOSITORY,callbackFailure","REPOSITORY,commitFailure","REPOSITORY,denied","REPOSITORY,success","REPOSITORY,providerFailure",
+            "QUESTIONNAIRE,expired","QUESTIONNAIRE,callbackFailure","QUESTIONNAIRE,commitFailure","QUESTIONNAIRE,denied","QUESTIONNAIRE,success","QUESTIONNAIRE,providerFailure"})
+    void atomicQuotaAndEvaluationAttemptThroughRealHttp(String kind,String mode) throws Exception {
+        var run=service.start(submission,coordinator);
+        if(kind.equals("QUESTIONNAIRE")) deliver(run.steps().get(0).jobId());
+        UUID target=run.steps().get(kind.equals("REPOSITORY")?0:1).jobId();
+        try(var probe=new QuestionnaireGenerationDatabaseIT.AtomicQuotaProbe(source,transactions,clock,clock::set,ai,mode);
+            var http=new QuestionnaireGenerationDatabaseIT.WorkerHttp(generation,service)) {
+            int status=http.post(target);
+            System.out.println("ATOMIC_QUOTA evaluation kind="+kind+" mode="+mode+" http="+status+" used="+probe.used()+" attempts="+jdbc.queryForObject("SELECT attempts FROM questionnaire_jobs WHERE id=?",Integer.class,target)+" provider="+probe.calls.get());
+            assertEquals(mode.equals("expired")?503:204,status);probe.assertAccounting(target);
+            if(mode.equals("success")) assertEquals("SUCCEEDED",jdbc.queryForObject("SELECT status FROM questionnaire_jobs WHERE id=?",String.class,target));
+            assertEquals(0,count("scorecard_entries")); assertEquals(0,count("notifications"));
+        }
     }
 
     void deliver(UUID id) { assertEquals(204,delivery.handle(id,new AssessmentJobController.JobReference(id)).getStatusCode().value()); }
