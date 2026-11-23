@@ -725,7 +725,13 @@ class QuestionnaireGenerationDatabaseIT {
             System.out.println("ATOMIC_QUOTA generation mode="+mode+" http="+status+" used="+probe.used()+" attempts="+jobs.findById(target).orElseThrow().getAttempts()+" provider="+probe.calls.get());
             assertEquals(mode.equals("expired")?503:204,status);
             probe.assertAccounting(target);
-            if(mode.equals("success")) assertEquals(QuestionnaireJobStatus.SUCCEEDED,jobs.findById(target).orElseThrow().getStatus());
+            if(mode.equals("success")) {
+                assertEquals(QuestionnaireJobStatus.SUCCEEDED,jobs.findById(target).orElseThrow().getStatus());
+                assertEquals(5,jdbc.queryForObject("""
+                        SELECT count(*) FROM questionnaire_questions q JOIN questionnaire_assignments a ON a.id=q.assignment_id
+                        WHERE a.snapshot_id=? AND q.source_references='[{"path":"src/Engine.java","startLine":1,"endLine":2}]'::jsonb
+                        """,Integer.class,snapshot().getId()));
+            }
             assertNull(snapshot().getOpensAt()); assertNull(snapshot().getClosesAt());
         }
     }
@@ -1069,6 +1075,12 @@ class QuestionnaireGenerationDatabaseIT {
             relay.createContext("/relay",exchange->{
                 calls.incrementAndGet();
                 try {
+                    var request=json.readTree(exchange.getRequestBody());
+                    if(request.path("operation").asText().equals("questionnaire_generation")) {
+                        var file=json.readTree(request.path("message").textValue()).path("files").get(0);
+                        assertEquals("src/Engine.java",file.path("path").textValue());
+                        assertEquals(1,file.path("sourceReferenceId").intValue());
+                    }
                     assertEquals(1,used());
                     jdbc.queryForObject("SELECT id FROM assessment_ai_quota WHERE id=1 FOR UPDATE NOWAIT",Integer.class);
                     var started=jdbc.queryForList("SELECT j.snapshot_id,j.id FROM questionnaire_jobs j JOIN questionnaire_job_attempts a ON a.job_id=j.id WHERE a.outcome='STARTED'");
@@ -1098,11 +1110,11 @@ class QuestionnaireGenerationDatabaseIT {
                         "Which boundary values test publication deadlines and why?");
                 for(int i=0;i<5;i++) {
                     var q=questions.addObject();q.put("id",ids.get(i).toString());q.put("prompt",prompts.get(i));q.put("rubric","Explain the actual Engine boundary.");
-                    q.putArray("sourceReferences").addObject().put("path","src/Engine.java").put("startLine",1).put("endLine",2);
+                    q.putArray("sourceReferenceIds").add(1);
                 }
                 if(mode.equals("invalidIdentity")) root.put("memberId","00000000-0000-4000-8000-000000000000");
-                if(mode.equals("invalidReference")) ((com.fasterxml.jackson.databind.node.ObjectNode)
-                        questions.get(0).path("sourceReferences").get(0)).put("endLine",5000);
+                if(mode.equals("invalidReference")) ((com.fasterxml.jackson.databind.node.ObjectNode)questions.get(0))
+                        .putArray("sourceReferenceIds").add(5000);
                 reply.set(mode.equals("invalidModelJson")?"SYNTHETIC_PRIVATE_RELAY_SENTINEL":root.toString());
                 return real.prepareGeneration(c.getArgument(0),c.getArgument(1),member,ids,c.getArgument(4));
             }).when(ai).prepareGeneration(anyString(),any(),any(),anyList(),anyList());
