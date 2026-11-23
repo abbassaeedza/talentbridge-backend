@@ -730,6 +730,28 @@ class QuestionnaireGenerationDatabaseIT {
         }
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "providerFailure,MODEL,RELAY_HTTP_FAILURE",
+            "invalidModelReply,MODEL,INVALID_RESPONSE",
+            "resultWriteFailure,RESULT_WRITE,UNCLASSIFIED"
+    })
+    void generationFailuresIdentifySafePhaseWithoutLoggingPayload(String mode,String phase,String category) throws Exception {
+        evidenceReady(); UUID target=activeJob();
+        var logger=(ch.qos.logback.classic.Logger)org.slf4j.LoggerFactory.getLogger(QuestionnaireGenerationService.class);
+        var captured=new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        captured.start(); logger.addAppender(captured);
+        try(var probe=new AtomicQuotaProbe(source,transactions,clock,clock::set,ai,mode);
+            var http=new WorkerHttp(worker,evaluation)) {
+            assertEquals(204,http.post(target)); probe.assertAccounting(target);
+            assertEquals("GENERATION_UNAVAILABLE",jobs.findById(target).orElseThrow().getLastErrorCode());
+            assertNull(snapshot().getOpensAt());
+            assertEquals(List.of("Questionnaire generation failed phase="+phase+" category="+category),
+                    captured.list.stream().map(e->e.getFormattedMessage()).toList());
+            assertTrue(captured.list.stream().allMatch(e->e.getThrowableProxy()==null));
+        } finally {logger.detachAppender(captured);captured.stop();}
+    }
+
     void httpDeliver(UUID id) throws Exception {
         var controller=new com.talentbridge.controller.AssessmentJobController(worker,evaluation);
         org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(new com.talentbridge.exception.GlobalExceptionHandler()).build()
@@ -1036,6 +1058,10 @@ class QuestionnaireGenerationDatabaseIT {
                 jdbc.execute("CREATE "+(mode.equals("commitFailure")?"CONSTRAINT ":"")+"TRIGGER "+trigger+" AFTER INSERT ON questionnaire_job_attempts "
                         +(mode.equals("commitFailure")?"DEFERRABLE INITIALLY DEFERRED ":"")+"FOR EACH ROW EXECUTE FUNCTION "+trigger+"()");
             }
+            if(mode.equals("resultWriteFailure")) {
+                jdbc.execute("CREATE FUNCTION "+trigger+"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'SYNTHETIC_PRIVATE_RELAY_SENTINEL'; END $$");
+                jdbc.execute("CREATE TRIGGER "+trigger+" BEFORE INSERT ON questionnaire_questions FOR EACH ROW EXECUTE FUNCTION "+trigger+"()");
+            }
             relay.createContext("/relay",exchange->{
                 calls.incrementAndGet();
                 try {
@@ -1059,6 +1085,7 @@ class QuestionnaireGenerationDatabaseIT {
                 assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
                 UUID member=c.getArgument(2);List<UUID> ids=c.getArgument(3);
                 var root=json.createObjectNode();root.put("memberId",member.toString());var questions=root.putArray("questions");
+                if(mode.equals("invalidModelReply")) root.put("unexpected","SYNTHETIC_PRIVATE_RELAY_SENTINEL");
                 var prompts=List.of("Explain how Engine validates a submitted revision before writing data.",
                         "Why does Engine acquire a row lock before reading the server clock?",
                         "Describe rollback behavior when an insert fails after updating its counter.",
@@ -1096,7 +1123,7 @@ class QuestionnaireGenerationDatabaseIT {
         }
         int used(){return jdbc.queryForObject("SELECT attempt_count FROM assessment_ai_quota WHERE id=1",Integer.class);}
         void assertAccounting(UUID job) {
-            boolean called=mode.equals("success") || mode.equals("providerFailure");
+            boolean called=Set.of("success","providerFailure","invalidModelReply","resultWriteFailure").contains(mode);
             assertEquals(called?1:0,calls.get());assertNull(relayFailure.get(),()->String.valueOf(relayFailure.get()));
             assertEquals(called?1:0,jdbc.queryForObject("SELECT attempts FROM questionnaire_jobs WHERE id=?",Integer.class,job));
             assertEquals(called?1:0,jdbc.queryForObject("SELECT count(*) FROM questionnaire_job_attempts WHERE job_id=?",Integer.class,job));
@@ -1107,6 +1134,9 @@ class QuestionnaireGenerationDatabaseIT {
             relay.stop(0);
             if(mode.equals("callbackFailure") || mode.equals("commitFailure")) {
                 jdbc.execute("DROP TRIGGER IF EXISTS "+trigger+" ON questionnaire_job_attempts");jdbc.execute("DROP FUNCTION IF EXISTS "+trigger+"()");
+            }
+            if(mode.equals("resultWriteFailure")) {
+                jdbc.execute("DROP TRIGGER IF EXISTS "+trigger+" ON questionnaire_questions");jdbc.execute("DROP FUNCTION IF EXISTS "+trigger+"()");
             }
             jdbc.update("UPDATE assessment_ai_quota SET quota_day=?,attempt_count=? WHERE id=1",previous.get("quota_day"),previous.get("attempt_count"));
         }

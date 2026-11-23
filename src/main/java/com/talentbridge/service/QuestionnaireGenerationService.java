@@ -7,6 +7,7 @@ import com.talentbridge.entity.*;
 import com.talentbridge.enums.*;
 import com.talentbridge.repository.*;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -18,11 +19,14 @@ import java.util.*;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
-@Service @RequiredArgsConstructor
+@Service @RequiredArgsConstructor @Slf4j
 public class QuestionnaireGenerationService {
     private static final int TRANSACTION_TIMEOUT_SECONDS = 2;
     private static final int RETRY_TRANSACTION_TIMEOUT_SECONDS = 5;
     private static final int RESULT_TRANSACTION_TIMEOUT_SECONDS = 5;
+    private static final Set<String> SAFE_GENERATION_CATEGORIES=Set.of("INPUT_TOO_LARGE","INSUFFICIENT_EVIDENCE",
+            "INVALID_INPUT","INVALID_RELAY_CONFIGURATION","QUOTA_CLOCK_REGRESSION","QUOTA_UNAVAILABLE",
+            "RELAY_HTTP_FAILURE","RELAY_INTERRUPTED","RELAY_FAILURE","INVALID_RESPONSE");
     private static final String JAVA_WHITESPACE = IntStream.rangeClosed(0,Character.MAX_CODE_POINT)
             .filter(Character::isWhitespace).collect(StringBuilder::new,StringBuilder::appendCodePoint,StringBuilder::append).toString();
     private final QuestionnaireSnapshotRepository snapshots;
@@ -81,6 +85,7 @@ public class QuestionnaireGenerationService {
                 transaction(() -> { failed(leased(work),"FROZEN_INPUT_UNAVAILABLE"); return null; });
             }
             if (inputs!=null) {
+                GenerationPhase phase=GenerationPhase.PREPARE;
                 try {
                     if (work.kind==QuestionnaireJobKind.EVIDENCE) {
                         transaction(() -> { leased(work); return null; });
@@ -90,12 +95,20 @@ public class QuestionnaireGenerationService {
                     } else {
                         var prepared=ai.prepareGeneration(work.brief,inputs.evidence,work.studentId,work.questionIds,inputs.prior);
                         transaction(() -> { leased(work); return null; });
+                        phase=GenerationPhase.MODEL;
                         var result=ai.generate(prepared,() -> transaction(() -> { startAttempt(work); return null; }));
+                        phase=GenerationPhase.RESULT_WRITE;
                         transaction(RESULT_TRANSACTION_TIMEOUT_SECONDS,() -> { finishGeneration(work,result); return null; });
                     }
                 } catch (AssessmentQuotaService.QuotaExceeded quota) {
                     transaction(() -> { defer(work,quota.resetAt()); return null; });
                 } catch (RuntimeException failure) {
+                    if (work.kind==QuestionnaireJobKind.GENERATE_MEMBER) {
+                        String code=failure instanceof AssessmentAIService.AssessmentException?failure.getMessage():null;
+                        // Never attach a throwable, payload or identifier to this diagnostic.
+                        log.warn("Questionnaire generation failed phase={} category={}",phase,
+                                code!=null && SAFE_GENERATION_CATEGORIES.contains(code)?code:"UNCLASSIFIED");
+                    }
                     transaction(() -> { fail(work,work.kind==QuestionnaireJobKind.EVIDENCE?"EVIDENCE_UNAVAILABLE":"GENERATION_UNAVAILABLE"); return null; });
                 }
             }
@@ -324,6 +337,7 @@ public class QuestionnaireGenerationService {
     public record Member(UUID assignmentId,UUID studentId,String studentName,int questionCount,int answeredCount) {}
     public record Job(UUID id,UUID retryOf,QuestionnaireJobKind kind,QuestionnaireJobStatus status,int attempts,int dispatchGeneration,Instant nextAttemptAt,Instant leaseUntil,String errorCode) {}
     private record Dispatch(int generation,Instant due) {}
+    private enum GenerationPhase { PREPARE, MODEL, RESULT_WRITE }
     private record MemberProgress(UUID id,int questionCount) {}
     private <T> T transaction(Supplier<T> operation) {
         return transaction(TRANSACTION_TIMEOUT_SECONDS,operation);

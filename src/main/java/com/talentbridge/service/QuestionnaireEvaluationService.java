@@ -196,24 +196,33 @@ public class QuestionnaireEvaluationService {
         var step=all.stream().filter(s->s.getId().equals(work.stepId())).findFirst().orElseThrow(QuestionnaireEvaluationService::notFound);
         if(result==null || !result.isObject()) throw new IllegalStateException("INVALID_EVALUATION_RESULT");
         if(step.getResult()!=null) throw busy();
-        step.setResult(result); finishAttempt(job,"SUCCEEDED",null); clearLease(job);
+        // JDBC keeps the private result out of Hibernate's parameter-bearing batch error logs.
+        if(jdbc.update("""
+                UPDATE questionnaire_evaluation_steps SET result=?::jsonb,updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND job_id=? AND result IS NULL
+                """,result.toString(),step.getId(),job.getId())!=1) throw busy();
+        var run=step.getRun();
+        // Do not flush the managed copy's old null result over the JDBC write.
+        entityManager.detach(step);
+        finishAttempt(job,"SUCCEEDED",null); clearLease(job);
         job.setStatus(QuestionnaireJobStatus.SUCCEEDED);job.setNextAttemptAt(null);job.setLastErrorCode(null);
-        if(all.stream().allMatch(s->s.getResult()!=null)) {
+        var results=all.stream().map(s->s.getId().equals(step.getId())?result:s.getResult()).toList();
+        if(results.stream().allMatch(Objects::nonNull)) {
             entityManager.unwrap(Session.class).setJdbcBatchSize(32);
-            var roster=applyMarks(step.getRun(),all);
-            recompute(step.getRun(),all.get(0),captured,roster);
-            step.getRun().setStatus("REVIEW");job.getSnapshot().setState(QuestionnaireState.REVIEW);
+            var roster=applyMarks(run,results.subList(1,results.size()));
+            recompute(run,results.get(0),captured,roster);
+            run.setStatus("REVIEW");job.getSnapshot().setState(QuestionnaireState.REVIEW);
             return false;
         }
         return true;
     }
 
-    private List<QuestionnaireAssignment> applyMarks(QuestionnaireEvaluationRun run,List<QuestionnaireEvaluationStep> all) {
+    private List<QuestionnaireAssignment> applyMarks(QuestionnaireEvaluationRun run,List<JsonNode> gradingResults) {
         var expected=new LinkedHashMap<UUID,Set<UUID>>();
         for(var member:members(run.getLockedMembers())) expected.put(member.memberId(),member.questions().stream().map(Answer::id).collect(java.util.stream.Collectors.toSet()));
         var received=new HashMap<UUID,Map<UUID,QuestionMark>>();
-        for(var step:all) if(step.getPosition()>0) {
-            var result=convert(step.getResult(),QuestionnaireEvaluation.class);
+        for(var value:gradingResults) {
+            var result=convert(value,QuestionnaireEvaluation.class);
             for(var member:result.members()) for(var mark:member.questions()) {
                 if(!expected.containsKey(member.memberId()) || !expected.get(member.memberId()).contains(mark.id()) || mark.mark()<0 || mark.mark()>20
                         || received.computeIfAbsent(member.memberId(),k->new HashMap<>()).putIfAbsent(mark.id(),mark)!=null) throw new IllegalStateException("INVALID_EVALUATION_RESULT");
@@ -255,10 +264,10 @@ public class QuestionnaireEvaluationService {
         return roster;
     }
 
-    private void recompute(QuestionnaireEvaluationRun run,QuestionnaireEvaluationStep repository,
+    private void recompute(QuestionnaireEvaluationRun run,JsonNode repositoryResult,
                            GitHubEvidence captured,List<QuestionnaireAssignment> roster) {
         var snapshot=run.getSnapshot();
-        var scores=convert(repository.getResult(),RepositoryEvaluation.class).repository();
+        var scores=convert(repositoryResult,RepositoryEvaluation.class).repository();
         if(roster.isEmpty() || roster.stream().anyMatch(a->a.getEffectiveScore()==null)) throw conflict("Questionnaire grades are incomplete");
         double repo=.20*scores.get("authenticity").score()+.25*scores.get("quality").score()+.25*scores.get("functionality").score()+.20*scores.get("scope").score()+.10*scores.get("collaboration").score();
         double questionnaire=roster.stream().mapToInt(QuestionnaireAssignment::getEffectiveScore).average().orElseThrow();
@@ -407,7 +416,7 @@ public class QuestionnaireEvaluationService {
             adjustments.save(QuestionnaireMarkAdjustment.builder().question(q).actorId(actor).previousScore(q.getEffectiveScore()).adjustedScore(mark).reason(reason).adjustedAt(clock.instant()).build());
             q.setEffectiveScore(mark);member.setEffectiveScore(member.getQuestions().stream().mapToInt(QuestionnaireQuestion::getEffectiveScore).sum());
             var run=runs.findFirstBySnapshotIdOrderBySequenceDesc(snapshot.getId()).orElseThrow();
-            recompute(run,steps.findAllByRunIdOrderByPosition(run.getId()).get(0),
+            recompute(run,steps.findAllByRunIdOrderByPosition(run.getId()).get(0).getResult(),
                     captured(snapshot.getId()),assignments.findAllBySnapshotId(snapshot.getId()));
             reports.flush();
             return privateView(snapshot);

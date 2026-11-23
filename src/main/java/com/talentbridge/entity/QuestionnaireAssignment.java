@@ -8,10 +8,12 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 import java.time.Instant;
 import java.util.*;
+import org.hibernate.annotations.DynamicUpdate;
 
 @Entity @Table(name = "questionnaire_assignments", uniqueConstraints =
         @UniqueConstraint(columnNames = {"snapshot_id", "student_id"}))
-@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+// Do not bind unchanged private answers in a grade-only update.
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder @DynamicUpdate
 public class QuestionnaireAssignment extends BaseEntity {
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "snapshot_id", nullable = false, updatable = false)
     @JsonIgnore private QuestionnaireSnapshot snapshot;
