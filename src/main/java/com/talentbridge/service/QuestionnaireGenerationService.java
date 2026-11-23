@@ -64,19 +64,29 @@ public class QuestionnaireGenerationService {
         UUID snapshotId=transaction(() -> jobs.snapshotId(id).orElseThrow(QuestionnaireGenerationService::notFound));
         Work work=transaction(() -> claim(id));
         if (work!=null) {
-            try {
-                if (work.kind==QuestionnaireJobKind.EVIDENCE) {
-                    GitHubEvidence captured=github.capture(work.resolution,work.brief,work.token);
-                    transaction(() -> { finishEvidence(work,captured); return null; });
-                } else {
-                    var prepared=ai.prepareGeneration(work.brief,work.evidence,work.studentId,work.questionIds,work.prior);
-                    var result=ai.generate(prepared,() -> transaction(() -> { startAttempt(work); return null; }));
-                    transaction(() -> { finishGeneration(work,result); return null; });
+            Inputs inputs=null;
+            try { inputs=prepare(work); }
+            catch (RuntimeException failure) {
+                transaction(() -> { failed(leased(work),"FROZEN_INPUT_UNAVAILABLE"); return null; });
+            }
+            if (inputs!=null) {
+                try {
+                    if (work.kind==QuestionnaireJobKind.EVIDENCE) {
+                        transaction(() -> { leased(work); return null; });
+                        GitHubEvidence captured=github.capture(inputs.resolution,work.brief,inputs.token);
+                        var resolution=inputs.resolution;
+                        transaction(() -> { finishEvidence(work,resolution,captured); return null; });
+                    } else {
+                        var prepared=ai.prepareGeneration(work.brief,inputs.evidence,work.studentId,work.questionIds,inputs.prior);
+                        transaction(() -> { leased(work); return null; });
+                        var result=ai.generate(prepared,() -> transaction(() -> { startAttempt(work); return null; }));
+                        transaction(() -> { finishGeneration(work,result); return null; });
+                    }
+                } catch (AssessmentQuotaService.QuotaExceeded quota) {
+                    transaction(() -> { defer(work,quota.resetAt()); return null; });
+                } catch (RuntimeException failure) {
+                    transaction(() -> { fail(work,work.kind==QuestionnaireJobKind.EVIDENCE?"EVIDENCE_UNAVAILABLE":"GENERATION_UNAVAILABLE"); return null; });
                 }
-            } catch (AssessmentQuotaService.QuotaExceeded quota) {
-                transaction(() -> { defer(work,quota.resetAt()); return null; });
-            } catch (RuntimeException failure) {
-                transaction(() -> { fail(work,work.kind==QuestionnaireJobKind.EVIDENCE?"EVIDENCE_UNAVAILABLE":"GENERATION_UNAVAILABLE"); return null; });
             }
         }
         // Exactly one next job exists per frozen team, bounding post-evidence enqueue time.
@@ -106,20 +116,24 @@ public class QuestionnaireGenerationService {
         job.setStatus(QuestionnaireJobStatus.RUNNING); job.setLeaseToken(UUID.randomUUID()); job.setLeaseUntil(now.plusSeconds(110));
         if (job.getKind()==QuestionnaireJobKind.GENERATE_MEMBER && job.getQuestionIds().isEmpty())
             job.setQuestionIds(java.util.stream.IntStream.range(0,5).mapToObj(i -> UUID.randomUUID()).toList());
-        Work work=new Work(); work.id=id; work.snapshotId=snapshot.getId(); work.lease=job.getLeaseToken();
-        work.attemptsAtClaim=job.getAttempts();
-        work.kind=job.getKind(); work.brief=snapshot.getFrozenBrief(); work.questionIds=List.copyOf(job.getQuestionIds());
+        return new Work(id,snapshot.getId(),job.getLeaseToken(),job.getAttempts(),job.getKind(),snapshot.getFrozenBrief(),
+                job.getAssignment()==null?null:job.getAssignment().getStudentId(),List.copyOf(job.getQuestionIds()),
+                snapshot.getFrozenResolution(),snapshot.getFrozenLeaderId());
+    }
+
+    private Inputs prepare(Work work) {
         try {
             if (work.kind==QuestionnaireJobKind.EVIDENCE) {
-                work.resolution=json.treeToValue(snapshot.getFrozenResolution(),GitHubEvidence.Resolution.class);
-                work.token=users.findGithubAccessTokenById(snapshot.getFrozenLeaderId()).orElse(null);
+                var resolution=json.treeToValue(work.frozenResolution,GitHubEvidence.Resolution.class);
+                String token=transaction(() -> users.findGithubAccessTokenById(work.leaderId).orElse(null));
+                return new Inputs(resolution,token,null,List.of());
             } else {
-                work.studentId=job.getAssignment().getStudentId();
-                work.evidence=json.treeToValue(evidence.findBySnapshotId(snapshot.getId()).orElseThrow().getEvidence(),GitHubEvidence.class);
-                work.prior=jdbc.queryForList("SELECT q.prompt FROM questionnaire_questions q JOIN questionnaire_assignments a ON a.id=q.assignment_id WHERE a.snapshot_id=? ORDER BY q.id",String.class,snapshot.getId());
+                var frozen=transaction(() -> evidence.findBySnapshotId(work.snapshotId).orElseThrow().getEvidence());
+                var captured=json.treeToValue(frozen,GitHubEvidence.class);
+                var prior=transaction(() -> jdbc.queryForList("SELECT q.prompt FROM questionnaire_questions q JOIN questionnaire_assignments a ON a.id=q.assignment_id WHERE a.snapshot_id=? ORDER BY q.id",String.class,work.snapshotId));
+                return new Inputs(null,null,captured,List.copyOf(prior));
             }
-        } catch (Exception failure) { failed(job,"FROZEN_INPUT_UNAVAILABLE"); return null; }
-        return work;
+        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) { throw new IllegalStateException("FROZEN_INPUT_UNAVAILABLE"); }
     }
 
     private void startAttempt(Work work) {
@@ -130,9 +144,9 @@ public class QuestionnaireGenerationService {
         jdbc.update("INSERT INTO questionnaire_job_attempts(job_id,attempt,started_at,outcome) VALUES (?,?,?,'STARTED')",job.getId(),job.getAttempts(),java.sql.Timestamp.from(clock.instant()));
     }
 
-    private void finishEvidence(Work work,GitHubEvidence captured) {
+    private void finishEvidence(Work work,GitHubEvidence.Resolution resolution,GitHubEvidence captured) {
         QuestionnaireJob job=leased(work); QuestionnaireSnapshot snapshot=job.getSnapshot();
-        if (captured==null || !work.resolution.equals(captured.resolution())) throw new IllegalStateException("INVALID_EVIDENCE");
+        if (captured==null || !resolution.equals(captured.resolution())) throw new IllegalStateException("INVALID_EVIDENCE");
         if (evidence.findBySnapshotId(snapshot.getId()).isEmpty()) evidence.save(QuestionnaireEvidence.builder()
                 .snapshot(snapshot).repositoryUrl(captured.resolution().repository().url())
                 .repositoryBranch(captured.resolution().resolvedBranch()).commitSha(captured.resolution().commitSha())
@@ -190,8 +204,7 @@ public class QuestionnaireGenerationService {
         job.setDispatchGeneration(job.getDispatchGeneration()+1);
     }
     private void fail(Work work,String code) {
-        QuestionnaireJob job=lockedJob(work.id);
-        if (!work.lease.equals(job.getLeaseToken())) throw busy();
+        QuestionnaireJob job=leased(work);
         finishAttempt(job,"FAILED",code); clearLease(job); job.setLastErrorCode(code);
         if (work.kind==QuestionnaireJobKind.EVIDENCE || job.getAttempts()<=work.attemptsAtClaim || job.getAttempts()>=3) failed(job,code);
         else { job.setStatus(QuestionnaireJobStatus.PENDING); job.setNextAttemptAt(clock.instant().plusSeconds(30));
@@ -280,11 +293,7 @@ public class QuestionnaireGenerationService {
     private static void nontransactional() {
         if (TransactionSynchronizationManager.isActualTransactionActive()) throw new IllegalStateException("Generation requires a nontransactional caller");
     }
-    private static final class Work {
-        UUID id,snapshotId,lease,studentId;
-        int attemptsAtClaim;
-        QuestionnaireJobKind kind; String brief,token;
-        GitHubEvidence.Resolution resolution; GitHubEvidence evidence;
-        List<UUID> questionIds; List<String> prior;
-    }
+    private record Work(UUID id,UUID snapshotId,UUID lease,int attemptsAtClaim,QuestionnaireJobKind kind,String brief,
+                        UUID studentId,List<UUID> questionIds,com.fasterxml.jackson.databind.JsonNode frozenResolution,UUID leaderId) {}
+    private record Inputs(GitHubEvidence.Resolution resolution,String token,GitHubEvidence evidence,List<String> prior) {}
 }
