@@ -51,18 +51,19 @@ class AssessmentAIServiceTest {
         ReflectionTestUtils.setField(transport, "n8nWebhookSecret", "synthetic-relay-secret");
         ReflectionTestUtils.setField(transport, "evalModel", "gpt-4o");
         quota = mock(AssessmentQuotaService.class);
+        doAnswer(call->{((Runnable)call.getArgument(0)).run();return null;}).when(quota).reserve(any(Runnable.class));
         service = new AssessmentAIService(mapper, transport, quota, new GitHubEvidenceService(mapper));
         reply.set(generation().toString());
     }
     @AfterEach void stop() { server.stop(0); }
 
-    @Test void durableAttemptCallbackRunsAfterQuotaButBeforeTheSingleProviderRequest() {
-        var ordered=inOrder(quota); var recorded=new java.util.concurrent.atomic.AtomicBoolean();
+    @Test void durableAttemptCallbackRunsInsideQuotaAuthorizationBeforeTheSingleProviderRequest() {
+        var recorded=new java.util.concurrent.atomic.AtomicBoolean();
         var result=service.generate(prepared(),()->{
-            ordered.verify(quota).reserve(); assertEquals(0,calls.get()); recorded.set(true);
+            assertEquals(0,calls.get()); recorded.set(true);
         });
         assertTrue(recorded.get()); assertEquals(member,result.memberId()); assertEquals(1,calls.get());
-        doThrow(new AssessmentQuotaService.QuotaExceeded(Instant.parse("2026-11-21T19:00:00Z"))).when(quota).reserve();
+        doThrow(new AssessmentQuotaService.QuotaExceeded(Instant.parse("2026-11-21T19:00:00Z"))).when(quota).reserve(any(Runnable.class));
         assertThrows(AssessmentQuotaService.QuotaExceeded.class,()->service.generate(prepared(),()->fail("No actual attempt may be recorded for quota deferral")));
         assertEquals(1,calls.get());
     }
@@ -113,7 +114,7 @@ class AssessmentAIServiceTest {
         assertEquals("gpt-4o", request.get().path("model").textValue());
         assertFalse(request.get().toString().contains("private-login"));
         assertTrue(request.get().path("message").textValue().contains("a".repeat(40)));
-        verify(quota).reserve(); assertEquals(1, calls.get());
+        verify(quota).reserve(any(Runnable.class)); assertEquals(1, calls.get());
     }
     @Test void gradesOnlyCompleteExpectedIdsWithoutComputingTeamTotals() {
         var complete = answers(); reply.set(questionnaireEvaluation().toString());
@@ -197,7 +198,7 @@ class AssessmentAIServiceTest {
         assertThrows(AssessmentException.class, () -> service.generate(prepared));
     }
     @Test void quotaDenialMakesNoRelayCallAndFailureIsNotRefunded() {
-        doThrow(new AssessmentQuotaService.QuotaExceeded(Instant.parse("2026-11-21T19:00:00Z"))).when(quota).reserve();
+        doThrow(new AssessmentQuotaService.QuotaExceeded(Instant.parse("2026-11-21T19:00:00Z"))).when(quota).reserve(any(Runnable.class));
         var prepared = prepared();
         var error = assertThrows(AssessmentQuotaService.QuotaExceeded.class, () -> service.generate(prepared));
         assertEquals(Instant.parse("2026-11-21T19:00:00Z"), error.resetAt()); assertEquals(0, calls.get());
@@ -245,7 +246,7 @@ class AssessmentAIServiceTest {
             assertFalse(payload.contains(q.rubric())); assertFalse(payload.contains(q.answer()));
         }
         reply.set(questionnaireEvaluation().toString());
-        assertEquals(1,service.evaluateQuestionnaire(questionnaire).members().size()); verify(quota,times(2)).reserve();
+        assertEquals(1,service.evaluateQuestionnaire(questionnaire).members().size()); verify(quota,times(2)).reserve(any(Runnable.class));
         payload=request.get().path("message").textValue(); assertTrue(payload.contains(complete.get(0).questions().get(0).answer()));
         assertThrows(AssessmentException.class, () -> service.evaluateRepository(repository));
         reply.set(repositoryEvaluation().toString()); assertThrows(AssessmentException.class, () -> service.evaluateQuestionnaire(questionnaire));
