@@ -7,7 +7,10 @@ import com.talentbridge.entity.*;
 import com.talentbridge.enums.*;
 import com.talentbridge.exception.ForbiddenException;
 import com.talentbridge.repository.*;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
+import org.hibernate.Session;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -22,6 +25,9 @@ import static com.talentbridge.service.AssessmentAIService.*;
 
 @Service @RequiredArgsConstructor
 public class QuestionnaireEvaluationService {
+    private static final int REPOSITORY_RESULT_SECONDS=5;
+    private static final int QUESTIONNAIRE_RESULT_SECONDS=9;
+    private static final Duration SUCCESSOR_DISPATCH_CUTOFF=Duration.ofSeconds(95);
     private final QuestionnaireSnapshotRepository snapshots;
     private final QuestionnaireAssignmentRepository assignments;
     private final QuestionnaireEvidenceRepository evidence;
@@ -41,6 +47,8 @@ public class QuestionnaireEvaluationService {
     private final JdbcTemplate jdbc;
     private final PlatformTransactionManager manager;
     private final Clock clock;
+    @PersistenceContext
+    private EntityManager entityManager;
 
     public boolean versionTwoSubmission(UUID id) {
         return transaction(()->submissions.findById(id).orElseThrow(QuestionnaireEvaluationService::notFound).getAssessmentVersion()==2);
@@ -116,8 +124,11 @@ public class QuestionnaireEvaluationService {
 
     public void handle(UUID jobId) {
         nontransactional();
+        Instant started=clock.instant();
+        long startedNanos=System.nanoTime();
         Work work=transaction(()->claim(jobId));
         if(work!=null) {
+            boolean needsDispatch=true;
             try {
                 var inputs=prepare(work);
                 // Reprepare the persisted partition, never replan it on recovery.
@@ -128,14 +139,17 @@ public class QuestionnaireEvaluationService {
                 Runnable attempt=()->transaction(()->{startAttempt(work);return null;});
                 JsonNode result="REPOSITORY".equals(work.kind())?json.valueToTree(ai.evaluateRepository(repository,attempt))
                         :json.valueToTree(ai.evaluateQuestionnaire(prepared.get(work.position()-1),attempt));
-                transaction(()->{finish(work,result);return null;});
+                int timeout="REPOSITORY".equals(work.kind())?REPOSITORY_RESULT_SECONDS:QUESTIONNAIRE_RESULT_SECONDS;
+                needsDispatch=transaction(timeout,()->finish(work,result,inputs.evidence()));
             } catch (AssessmentQuotaService.QuotaExceeded quota) {
                 transaction(()->{var job=leased(work); clearLease(job); job.setStatus(QuestionnaireJobStatus.DEFERRED);
                     job.setNextAttemptAt(quota.resetAt()); job.setLastErrorCode("ASSESSMENT_DAILY_LIMIT"); bump(job); return null;});
             } catch (RuntimeException failure) {
                 transaction(()->{fail(work);return null;});
             }
-            if (!dispatchNext(work.runId())) throw busy();
+            // A redelivery of the completed job can dispatch its successor without another model call.
+            if (needsDispatch && (Duration.between(started,clock.instant()).compareTo(SUCCESSOR_DISPATCH_CUTOFF)>=0
+                    || System.nanoTime()-startedNanos>=SUCCESSOR_DISPATCH_CUTOFF.toNanos() || !dispatchNext(work.runId()))) throw busy();
         } else {
             UUID runId=transaction(()->steps.findByJobId(jobId).map(s->s.getRun().getId()).orElse(null));
             if(runId!=null && !dispatchNext(runId)) throw busy();
@@ -162,9 +176,11 @@ public class QuestionnaireEvaluationService {
     }
 
     private Inputs prepare(Work work) {
-        var frozen=transaction(()->evidence.findBySnapshotId(work.snapshotId()).orElseThrow(QuestionnaireEvaluationService::notFound).getEvidence());
-        var partition=transaction(()->steps.findAllByRunIdOrderByPosition(work.runId()).stream().filter(s->s.getPosition()>0).map(QuestionnaireEvaluationStep::getMembers).toList());
-        return new Inputs(captured(frozen),partition.stream().map(this::members).map(List::copyOf).toList());
+        var raw=transaction(()->new FrozenInputs(
+                evidence.findBySnapshotId(work.snapshotId()).orElseThrow(QuestionnaireEvaluationService::notFound).getEvidence(),
+                steps.findAllByRunIdOrderByPosition(work.runId()).stream()
+                        .filter(s->s.getPosition()>0).map(QuestionnaireEvaluationStep::getMembers).toList()));
+        return new Inputs(captured(raw.evidence()),raw.partition().stream().map(this::members).map(List::copyOf).toList());
     }
 
     private void startAttempt(Work work) {
@@ -174,21 +190,25 @@ public class QuestionnaireEvaluationService {
         jdbc.update("INSERT INTO questionnaire_job_attempts(job_id,attempt,started_at,outcome) VALUES (?,?,?,'STARTED')",job.getId(),job.getAttempts(),Timestamp.from(clock.instant()));
     }
 
-    private void finish(Work work,JsonNode result) {
-        var job=leased(work); var step=steps.findById(work.stepId()).orElseThrow(QuestionnaireEvaluationService::notFound);
+    private boolean finish(Work work,JsonNode result,GitHubEvidence captured) {
+        var job=leased(work);
+        var all=steps.findAllByRunIdOrderByPosition(work.runId());
+        var step=all.stream().filter(s->s.getId().equals(work.stepId())).findFirst().orElseThrow(QuestionnaireEvaluationService::notFound);
         if(result==null || !result.isObject()) throw new IllegalStateException("INVALID_EVALUATION_RESULT");
         if(step.getResult()!=null) throw busy();
         step.setResult(result); finishAttempt(job,"SUCCEEDED",null); clearLease(job);
         job.setStatus(QuestionnaireJobStatus.SUCCEEDED);job.setNextAttemptAt(null);job.setLastErrorCode(null);
-        var all=steps.findAllByRunIdOrderByPosition(work.runId());
         if(all.stream().allMatch(s->s.getResult()!=null)) {
-            applyMarks(step.getRun(),all);
-            recompute(step.getRun(),all.get(0));
+            entityManager.unwrap(Session.class).setJdbcBatchSize(32);
+            var roster=applyMarks(step.getRun(),all);
+            recompute(step.getRun(),all.get(0),captured,roster);
             step.getRun().setStatus("REVIEW");job.getSnapshot().setState(QuestionnaireState.REVIEW);
+            return false;
         }
+        return true;
     }
 
-    private void applyMarks(QuestionnaireEvaluationRun run,List<QuestionnaireEvaluationStep> all) {
+    private List<QuestionnaireAssignment> applyMarks(QuestionnaireEvaluationRun run,List<QuestionnaireEvaluationStep> all) {
         var expected=new LinkedHashMap<UUID,Set<UUID>>();
         for(var member:members(run.getLockedMembers())) expected.put(member.memberId(),member.questions().stream().map(Answer::id).collect(java.util.stream.Collectors.toSet()));
         var received=new HashMap<UUID,Map<UUID,QuestionMark>>();
@@ -202,7 +222,9 @@ public class QuestionnaireEvaluationService {
         if(!received.keySet().equals(expected.keySet())) throw new IllegalStateException("INVALID_EVALUATION_RESULT");
         Set<UUID> overridden=new HashSet<>(jdbc.queryForList("SELECT DISTINCT m.question_id FROM questionnaire_mark_adjustments m JOIN questionnaire_questions q ON q.id=m.question_id JOIN questionnaire_assignments a ON a.id=q.assignment_id WHERE a.snapshot_id=?",UUID.class,run.getSnapshot().getId()));
         var incomplete=new HashSet<>(json.convertValue(run.getIncompleteMembers(),new TypeReference<List<UUID>>(){}));
-        for(var member:assignments.findAllBySnapshotId(run.getSnapshot().getId())) {
+        var roster=assignments.findWithQuestionsBySnapshotId(run.getSnapshot().getId());
+        var updates=new ArrayList<Object[]>();
+        for(var member:roster) {
             member.setGradedRevision(member.getLockedAnswerRevision());
             if(incomplete.contains(member.getStudentId())) {
                 member.setGradeState(QuestionnaireGradeState.INCOMPLETE);member.setAiScore(0);member.setEffectiveScore(0); continue;
@@ -212,17 +234,31 @@ public class QuestionnaireEvaluationService {
             int aiTotal=0,effectiveTotal=0;
             for(var q:member.getQuestions()) {
                 var mark=marks.get(q.getId()); if(mark==null) throw new IllegalStateException("INVALID_EVALUATION_RESULT");
-                if(!overridden.contains(q.getId())) {q.setAiScore(mark.mark());q.setEffectiveScore(mark.mark());q.setGradingNotes(mark.feedback());}
-                aiTotal+=q.getAiScore(); effectiveTotal+=q.getEffectiveScore();
+                if(overridden.contains(q.getId())) {
+                    aiTotal+=q.getAiScore(); effectiveTotal+=q.getEffectiveScore();
+                } else {
+                    updates.add(new Object[]{mark.mark(),mark.mark(),mark.feedback(),q.getId(),member.getId()});
+                    aiTotal+=mark.mark(); effectiveTotal+=mark.mark();
+                }
             }
             member.setAiScore(aiTotal);member.setEffectiveScore(effectiveTotal);member.setGradeState(QuestionnaireGradeState.GRADED);
         }
+        // One batch across the frozen roster; Hibernate would otherwise interleave member and question updates.
+        if(!updates.isEmpty()) {
+            int[] changed=jdbc.batchUpdate("""
+                    UPDATE questionnaire_questions SET ai_score=?,effective_score=?,grading_notes=?,updated_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND assignment_id=?
+                    """,updates);
+            if(changed.length!=updates.size() || Arrays.stream(changed).anyMatch(n->n!=1 && n!=java.sql.Statement.SUCCESS_NO_INFO))
+                throw new IllegalStateException("INVALID_EVALUATION_RESULT");
+        }
+        return roster;
     }
 
-    private void recompute(QuestionnaireEvaluationRun run,QuestionnaireEvaluationStep repository) {
-        var snapshot=run.getSnapshot();var captured=captured(snapshot.getId());
+    private void recompute(QuestionnaireEvaluationRun run,QuestionnaireEvaluationStep repository,
+                           GitHubEvidence captured,List<QuestionnaireAssignment> roster) {
+        var snapshot=run.getSnapshot();
         var scores=convert(repository.getResult(),RepositoryEvaluation.class).repository();
-        var roster=assignments.findAllBySnapshotId(snapshot.getId());
         if(roster.isEmpty() || roster.stream().anyMatch(a->a.getEffectiveScore()==null)) throw conflict("Questionnaire grades are incomplete");
         double repo=.20*scores.get("authenticity").score()+.25*scores.get("quality").score()+.25*scores.get("functionality").score()+.20*scores.get("scope").score()+.10*scores.get("collaboration").score();
         double questionnaire=roster.stream().mapToInt(QuestionnaireAssignment::getEffectiveScore).average().orElseThrow();
@@ -252,7 +288,7 @@ public class QuestionnaireEvaluationService {
                     .frozenStudentName(member.getStudentName()).frozenGithubLogin(member.getGithubLogin())
                     .performanceNotes("Timestamped first-100 contributor sample; counts are not commit-pinned or proof of effort.").build());
         }
-        reports.saveAndFlush(report);
+        reports.save(report);
     }
 
     private void fail(Work work) {
@@ -371,7 +407,9 @@ public class QuestionnaireEvaluationService {
             adjustments.save(QuestionnaireMarkAdjustment.builder().question(q).actorId(actor).previousScore(q.getEffectiveScore()).adjustedScore(mark).reason(reason).adjustedAt(clock.instant()).build());
             q.setEffectiveScore(mark);member.setEffectiveScore(member.getQuestions().stream().mapToInt(QuestionnaireQuestion::getEffectiveScore).sum());
             var run=runs.findFirstBySnapshotIdOrderBySequenceDesc(snapshot.getId()).orElseThrow();
-            recompute(run,steps.findAllByRunIdOrderByPosition(run.getId()).get(0));
+            recompute(run,steps.findAllByRunIdOrderByPosition(run.getId()).get(0),
+                    captured(snapshot.getId()),assignments.findAllBySnapshotId(snapshot.getId()));
+            reports.flush();
             return privateView(snapshot);
         });
     }
@@ -408,8 +446,11 @@ public class QuestionnaireEvaluationService {
     private QuestionnaireSnapshot lockRun(UUID run) {return lockSnapshot(jdbc.query("SELECT snapshot_id FROM questionnaire_evaluation_runs WHERE id=?",(r,n)->r.getObject(1,UUID.class),run)
             .stream().findFirst().orElseThrow(QuestionnaireEvaluationService::notFound));}
     private QuestionnaireSnapshot lockSnapshot(UUID id) {
-        jdbc.queryForObject("SELECT id FROM questionnaire_snapshots WHERE id=? FOR UPDATE",UUID.class,id);
+        lockSnapshotRow(id);
         return snapshots.findById(id).orElseThrow(QuestionnaireEvaluationService::notFound);
+    }
+    private void lockSnapshotRow(UUID id) {
+        jdbc.queryForObject("SELECT id FROM questionnaire_snapshots WHERE id=? FOR UPDATE",UUID.class,id);
     }
     private List<QuestionnaireAssignment> lockRoster(UUID snapshot) {
         jdbc.queryForList("SELECT id FROM questionnaire_assignments WHERE snapshot_id=? ORDER BY id FOR UPDATE",UUID.class,snapshot);
@@ -421,7 +462,8 @@ public class QuestionnaireEvaluationService {
         return jobs.findById(id).orElseThrow(QuestionnaireEvaluationService::notFound);
     }
     private QuestionnaireJob leased(Work work) {
-        var job=lockJob(work.jobId());
+        lockSnapshotRow(work.snapshotId());
+        var job=jobs.findWithSnapshotById(work.jobId()).orElseThrow(QuestionnaireEvaluationService::notFound);
         if(!work.lease().equals(job.getLeaseToken()) || job.getStatus()!=QuestionnaireJobStatus.RUNNING || !clock.instant().isBefore(job.getLeaseUntil())) throw busy();return job;
     }
     private void requireExpired(QuestionnaireSnapshot snapshot) {
@@ -436,7 +478,8 @@ public class QuestionnaireEvaluationService {
     private static boolean terminal(QuestionnaireJob job){return job.getStatus()==QuestionnaireJobStatus.SUCCEEDED || job.getStatus()==QuestionnaireJobStatus.FAILED;}
     private List<MemberAnswers> members(JsonNode node){return json.convertValue(node,new TypeReference<List<MemberAnswers>>(){});}
     private <T> T convert(JsonNode node,Class<T> type){return json.convertValue(node,type);}
-    private <T> T transaction(Supplier<T> operation){var tx=new TransactionTemplate(manager);tx.setTimeout(2);return tx.execute(status->operation.get());}
+    private <T> T transaction(Supplier<T> operation){return transaction(2,operation);}
+    private <T> T transaction(int seconds,Supplier<T> operation){var tx=new TransactionTemplate(manager);tx.setTimeout(seconds);return tx.execute(status->operation.get());}
     private static void nontransactional(){if(TransactionSynchronizationManager.isActualTransactionActive()) throw new IllegalStateException("Evaluation requires a nontransactional caller");}
     private static Instant instant(Timestamp value){return value==null?null:value.toInstant();}
     private static ResponseStatusException error(HttpStatus status,String message){return new ResponseStatusException(status,message);}
@@ -444,6 +487,7 @@ public class QuestionnaireEvaluationService {
     private static ResponseStatusException conflict(String message){return error(HttpStatus.CONFLICT,message);}
     private static ResponseStatusException busy(){return error(HttpStatus.SERVICE_UNAVAILABLE,"Evaluation is busy; retry delivery");}
     private record Dispatch(UUID job,int generation,Instant due){}
+    private record FrozenInputs(JsonNode evidence,List<JsonNode> partition){}
     private record Work(UUID jobId,UUID lease,int attemptsAtClaim,UUID runId,UUID stepId,int position,String kind,UUID snapshotId,String brief){}
     private record Inputs(GitHubEvidence evidence,List<List<MemberAnswers>> partition){}
     public record RunView(UUID id,UUID submissionId,int assessmentVersion,String status,UUID reportId,Instant serverNow,List<StepView> steps){}

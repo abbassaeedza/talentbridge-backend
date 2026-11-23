@@ -13,4 +13,6 @@ public interface QuestionnaireAssignmentRepository extends JpaRepository<Questio
     @Query("SELECT a FROM QuestionnaireAssignment a WHERE a.id = :id AND a.studentId = :studentId")
     Optional<QuestionnaireAssignment> findOwnedForUpdate(@Param("id") UUID id, @Param("studentId") UUID studentId);
     List<QuestionnaireAssignment> findAllBySnapshotId(UUID snapshotId);
+    @EntityGraph(attributePaths="questions")
+    List<QuestionnaireAssignment> findWithQuestionsBySnapshotId(UUID snapshotId);
 }

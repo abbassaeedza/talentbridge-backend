@@ -42,6 +42,7 @@ class QuestionnaireEvaluationDatabaseIT {
     @Autowired EvaluationReportRepository reports;
     @Autowired ObjectMapper json;
     @Autowired QuestionnaireGenerationDatabaseIT.PreparationMapper inputMapper;
+    @Autowired QuestionnaireGenerationDatabaseIT.ProfileFetchProbe sqlProbe;
     @Autowired MutableClock clock;
     @Autowired DataSource source;
     @Autowired PlatformTransactionManager transactions;
@@ -145,6 +146,49 @@ class QuestionnaireEvaluationDatabaseIT {
         var individual=safe.getStudentScores().stream().filter(s->s.getStudent().getId().equals(student)).findFirst().orElseThrow();
         assertEquals(40,individual.getContributionPercentage()); assertEquals(78.6,individual.getIndividualScore());
         verifyNoInteractions(generation);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"REPOSITORY","QUESTIONNAIRE"})
+    void evaluationWorkerCommitsRelayResultOverRemoteDatabase(String kind) throws Exception {
+        var run=service.start(submission,coordinator);
+        boolean isRepository=kind.equals("REPOSITORY");
+        if (!isRepository) deliver(run.steps().get(0).jobId());
+        UUID target=run.steps().get(isRepository?0:1).jobId();
+        if (isRepository) {
+            when(ai.evaluateRepository(any(),any(Runnable.class))).thenAnswer(c->{
+                ((Runnable)c.getArgument(1)).run();
+                sqlProbe.delayNextResultWrite.set(true);
+                return repository(84);
+            });
+        } else {
+            when(ai.evaluateQuestionnaire(any(),any(Runnable.class))).thenAnswer(c->{
+                ((Runnable)c.getArgument(1)).run();
+                sqlProbe.delayNextResultWrite.set(true);
+                return marks(c.getArgument(0),14,16);
+            });
+        }
+        sqlProbe.resultWriteStatements.clear();
+        try(var http=new QuestionnaireGenerationDatabaseIT.WorkerHttp(generation,service)) {
+            assertEquals(204,http.post(target));
+            var read=service.run(run.id());
+            var step=read.steps().get(isRepository?0:1);
+            assertFalse(sqlProbe.resultWriteStatements.isEmpty());
+            assertEquals("SUCCEEDED",step.status().toString(),
+                    ()->kind+" result: "+step.errorCode()+"; delayed SQL statements: "+sqlProbe.resultWriteStatements);
+            assertEquals(1,step.attempts());
+            if (isRepository) {
+                assertEquals("DISPATCHED",read.steps().get(1).status().toString());
+                assertNull(read.reportId());
+            } else {
+                assertEquals("REVIEW",read.status());
+                assertEquals(1,sqlProbe.resultWriteStatements.stream()
+                        .filter(sql->sql.toLowerCase(Locale.ROOT).startsWith("update questionnaire_questions")).count());
+                assertEquals(81,service.report(submission,coordinator).orElseThrow().getTotalScore());
+                assertTrue(service.report(submission,student).isEmpty());
+            }
+            assertEquals(0,count("scorecard_entries")); assertEquals(0,count("notifications"));
+        }
     }
 
     @Test void slowFrozenPreparationCannotExpireEvaluationClaimCommitThroughRealHttp() throws Exception {
@@ -531,6 +575,28 @@ class QuestionnaireEvaluationDatabaseIT {
         assertEquals("REVIEW",service.run(run.id()).status());verify(ai,times(1)).evaluateRepository(any(),any(Runnable.class));
     }
 
+    @Test void slowRelayResultCommitsBeforeDeferringSuccessorDispatchToRedelivery() throws Exception {
+        var run=service.start(submission,coordinator);
+        UUID repo=run.steps().get(0).jobId(), next=run.steps().get(1).jobId();
+        when(ai.evaluateRepository(any(),any(Runnable.class))).thenAnswer(c->{
+            ((Runnable)c.getArgument(1)).run();
+            clock.set(closes.plusSeconds(96));
+            return repository(84);
+        });
+        try(var http=new QuestionnaireGenerationDatabaseIT.WorkerHttp(generation,service)) {
+            assertEquals(503,http.post(repo));
+            var committed=service.run(run.id());
+            assertEquals(QuestionnaireJobStatus.SUCCEEDED,committed.steps().get(0).status());
+            assertEquals(1,committed.steps().get(0).attempts());
+            assertEquals(QuestionnaireJobStatus.PENDING,committed.steps().get(1).status());
+            verify(queue,never()).enqueue(eq(next),anyInt(),any());
+            assertEquals(204,http.post(repo));
+            assertEquals(QuestionnaireJobStatus.DISPATCHED,service.run(run.id()).steps().get(1).status());
+            verify(queue).enqueue(next,0,closes);
+            verify(ai,times(1)).evaluateRepository(any(),any(Runnable.class));
+        }
+    }
+
     @Test void finalizationNotificationFailureRollsBackReportScorecardsAndAllFrozenNotifications() {
         var run=grade();String trigger="task4_notification_"+UUID.randomUUID().toString().replace("-","");
         jdbc.execute("CREATE FUNCTION "+trigger+"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.recipient_id='"+student+"'::uuid THEN RAISE EXCEPTION 'SYNTHETIC_FINALIZATION_FAILURE'; END IF; RETURN NEW; END $$");
@@ -541,6 +607,29 @@ class QuestionnaireEvaluationDatabaseIT {
             assertEquals(0,count("scorecard_entries"));assertEquals(0,count("notifications"));
         } finally {jdbc.execute("DROP TRIGGER "+trigger+" ON notifications");jdbc.execute("DROP FUNCTION "+trigger+"()");}
         service.finalizeReport(run.reportId(),coordinator);assertEquals(2,count("scorecard_entries"));assertEquals(2,count("notifications"));
+    }
+
+    @Test void reportInsertFailureRollsBackBatchedQuestionMarksAndPrivateResult() throws Exception {
+        var run=service.start(submission,coordinator);
+        UUID repo=run.steps().get(0).jobId(), privateStep=run.steps().get(1).jobId();
+        deliver(repo);
+        String trigger="task4_report_"+UUID.randomUUID().toString().replace("-","");
+        jdbc.execute("CREATE FUNCTION "+trigger+"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.submission_id='"+submission+"'::uuid THEN RAISE EXCEPTION 'SYNTHETIC_REPORT_FAILURE'; END IF; RETURN NEW; END $$");
+        jdbc.execute("CREATE TRIGGER "+trigger+" BEFORE INSERT ON evaluation_reports FOR EACH ROW EXECUTE FUNCTION "+trigger+"()");
+        try(var http=new QuestionnaireGenerationDatabaseIT.WorkerHttp(generation,service)) {
+            assertEquals(204,http.post(privateStep));
+            assertTrue(service.report(submission,coordinator).isEmpty());
+            assertEquals(0,jdbc.queryForObject("""
+                    SELECT count(*) FROM questionnaire_questions q JOIN questionnaire_assignments a ON a.id=q.assignment_id
+                    WHERE a.snapshot_id=? AND (q.ai_score IS NOT NULL OR q.effective_score IS NOT NULL OR q.grading_notes IS NOT NULL)
+                    """,Integer.class,snapshot));
+            assertTrue(assignments.findAllBySnapshotId(snapshot).stream().allMatch(a->a.getEffectiveScore()==null));
+            assertEquals(QuestionnaireJobStatus.SUCCEEDED,service.run(run.id()).steps().get(0).status());
+            assertEquals(List.of("FAILED"),jdbc.queryForList("SELECT outcome FROM questionnaire_job_attempts WHERE job_id=?",String.class,privateStep));
+            assertEquals(0,count("scorecard_entries")); assertEquals(0,count("notifications"));
+        } finally {
+            jdbc.execute("DROP TRIGGER "+trigger+" ON evaluation_reports"); jdbc.execute("DROP FUNCTION "+trigger+"()");
+        }
     }
 
     @Test void actualFinalizeHttpCannotOverwriteAnExistingLegacyScorecardForTheSameProject() throws Exception {
@@ -686,6 +775,7 @@ class QuestionnaireEvaluationDatabaseIT {
     }
     @Configuration @Import({QuestionnaireEvaluationService.class,AssessmentJobController.class,QuestionnaireService.class,ScorecardService.class,EvaluationService.class})
     static class Config {
+        @Bean static QuestionnaireGenerationDatabaseIT.ProfileFetchProbe sqlProbe(){return new QuestionnaireGenerationDatabaseIT.ProfileFetchProbe();}
         @Bean MutableClock clock(){return new MutableClock();}
         @Bean QuestionnaireGenerationDatabaseIT.PreparationMapper mapper(){return new QuestionnaireGenerationDatabaseIT.PreparationMapper();}
         @Bean AssessmentAIService ai(){return mock(AssessmentAIService.class);}
