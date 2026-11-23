@@ -147,6 +147,15 @@ class AssessmentAIServiceTest {
         reply.set(json); var prepared = prepared();
         var error = assertThrows(AssessmentException.class, () -> service.generate(prepared));
         assertEquals("INVALID_RESPONSE", error.getMessage()); assertNull(error.getCause());
+        assertEquals(switch (mutation) {
+            case "missing","extra" -> ReplyCheck.GENERATION_SHAPE;
+            case "duplicate","near" -> ReplyCheck.GENERATION_DUPLICATE;
+            case "reference","hidden" -> ReplyCheck.GENERATION_REFERENCES;
+            case "id" -> ReplyCheck.GENERATION_IDENTITY;
+            case "type","nul" -> ReplyCheck.GENERATION_TEXT;
+            case "surrogate" -> ReplyCheck.RELAY_ENVELOPE;
+            default -> ReplyCheck.MODEL_JSON;
+        },error.replyCheck());
     }
     @ParameterizedTest @ValueSource(strings = {"missing", "duplicate", "unknownMember", "unknownQuestion", "fraction", "negative", "over", "string", "feedback"})
     void rejectsMalformedGradesAsTechnicalFailure(String mutation) {

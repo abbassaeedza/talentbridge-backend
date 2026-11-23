@@ -104,10 +104,12 @@ public class QuestionnaireGenerationService {
                     transaction(() -> { defer(work,quota.resetAt()); return null; });
                 } catch (RuntimeException failure) {
                     if (work.kind==QuestionnaireJobKind.GENERATE_MEMBER) {
-                        String code=failure instanceof AssessmentAIService.AssessmentException?failure.getMessage():null;
+                        var assessment=failure instanceof AssessmentAIService.AssessmentException known?known:null;
+                        String code=assessment==null?null:assessment.getMessage();
                         // Never attach a throwable, payload or identifier to this diagnostic.
-                        log.warn("Questionnaire generation failed phase={} category={}",phase,
-                                code!=null && SAFE_GENERATION_CATEGORIES.contains(code)?code:"UNCLASSIFIED");
+                        log.warn("Questionnaire generation failed phase={} category={} validation={}",phase,
+                                code!=null && SAFE_GENERATION_CATEGORIES.contains(code)?code:"UNCLASSIFIED",
+                                assessment==null?AssessmentAIService.ReplyCheck.NONE:assessment.replyCheck());
                     }
                     transaction(() -> { fail(work,work.kind==QuestionnaireJobKind.EVIDENCE?"EVIDENCE_UNAVAILABLE":"GENERATION_UNAVAILABLE"); return null; });
                 }

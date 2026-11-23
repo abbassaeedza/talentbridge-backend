@@ -732,11 +732,15 @@ class QuestionnaireGenerationDatabaseIT {
 
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({
-            "providerFailure,MODEL,RELAY_HTTP_FAILURE",
-            "invalidModelReply,MODEL,INVALID_RESPONSE",
-            "resultWriteFailure,RESULT_WRITE,UNCLASSIFIED"
+            "providerFailure,MODEL,RELAY_HTTP_FAILURE,NONE",
+            "invalidRelayEnvelope,MODEL,INVALID_RESPONSE,RELAY_ENVELOPE",
+            "invalidModelJson,MODEL,INVALID_RESPONSE,MODEL_JSON",
+            "invalidModelReply,MODEL,INVALID_RESPONSE,GENERATION_SHAPE",
+            "invalidIdentity,MODEL,INVALID_RESPONSE,GENERATION_IDENTITY",
+            "invalidReference,MODEL,INVALID_RESPONSE,GENERATION_REFERENCES",
+            "resultWriteFailure,RESULT_WRITE,UNCLASSIFIED,NONE"
     })
-    void generationFailuresIdentifySafePhaseWithoutLoggingPayload(String mode,String phase,String category) throws Exception {
+    void generationFailuresIdentifySafePhaseWithoutLoggingPayload(String mode,String phase,String category,String validation) throws Exception {
         evidenceReady(); UUID target=activeJob();
         var logger=(ch.qos.logback.classic.Logger)org.slf4j.LoggerFactory.getLogger(QuestionnaireGenerationService.class);
         var captured=new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
@@ -746,7 +750,7 @@ class QuestionnaireGenerationDatabaseIT {
             assertEquals(204,http.post(target)); probe.assertAccounting(target);
             assertEquals("GENERATION_UNAVAILABLE",jobs.findById(target).orElseThrow().getLastErrorCode());
             assertNull(snapshot().getOpensAt());
-            assertEquals(List.of("Questionnaire generation failed phase="+phase+" category="+category),
+            assertEquals(List.of("Questionnaire generation failed phase="+phase+" category="+category+" validation="+validation),
                     captured.list.stream().map(e->e.getFormattedMessage()).toList());
             assertTrue(captured.list.stream().allMatch(e->e.getThrowableProxy()==null));
         } finally {logger.detachAppender(captured);captured.stop();}
@@ -1072,7 +1076,8 @@ class QuestionnaireGenerationDatabaseIT {
                     jdbc.queryForObject("SELECT id FROM questionnaire_snapshots WHERE id=? FOR UPDATE NOWAIT",UUID.class,started.get(0).get("snapshot_id"));
                     assertEquals(1,jdbc.queryForObject("SELECT attempts FROM questionnaire_jobs WHERE id=?",Integer.class,started.get(0).get("id")));
                 } catch(Throwable failure) {relayFailure.set(failure);}
-                byte[] body=json.writeValueAsBytes(Map.of("message",reply.get()));
+                byte[] body=json.writeValueAsBytes(mode.equals("invalidRelayEnvelope")
+                        ?Map.of("other","SYNTHETIC_PRIVATE_RELAY_SENTINEL"):Map.of("message",reply.get()));
                 exchange.sendResponseHeaders(mode.equals("providerFailure")?502:200,body.length);
                 exchange.getResponseBody().write(body);exchange.close();
             });relay.start();
@@ -1095,7 +1100,10 @@ class QuestionnaireGenerationDatabaseIT {
                     var q=questions.addObject();q.put("id",ids.get(i).toString());q.put("prompt",prompts.get(i));q.put("rubric","Explain the actual Engine boundary.");
                     q.putArray("sourceReferences").addObject().put("path","src/Engine.java").put("startLine",1).put("endLine",2);
                 }
-                reply.set(root.toString());
+                if(mode.equals("invalidIdentity")) root.put("memberId","00000000-0000-4000-8000-000000000000");
+                if(mode.equals("invalidReference")) ((com.fasterxml.jackson.databind.node.ObjectNode)
+                        questions.get(0).path("sourceReferences").get(0)).put("endLine",5000);
+                reply.set(mode.equals("invalidModelJson")?"SYNTHETIC_PRIVATE_RELAY_SENTINEL":root.toString());
                 return real.prepareGeneration(c.getArgument(0),c.getArgument(1),member,ids,c.getArgument(4));
             }).when(ai).prepareGeneration(anyString(),any(),any(),anyList(),anyList());
             doAnswer(c->real.generate(c.getArgument(0),c.getArgument(1))).when(ai).generate(any(),any(Runnable.class));
@@ -1123,7 +1131,8 @@ class QuestionnaireGenerationDatabaseIT {
         }
         int used(){return jdbc.queryForObject("SELECT attempt_count FROM assessment_ai_quota WHERE id=1",Integer.class);}
         void assertAccounting(UUID job) {
-            boolean called=Set.of("success","providerFailure","invalidModelReply","resultWriteFailure").contains(mode);
+            boolean called=Set.of("success","providerFailure","invalidRelayEnvelope","invalidModelJson","invalidModelReply",
+                    "invalidIdentity","invalidReference","resultWriteFailure").contains(mode);
             assertEquals(called?1:0,calls.get());assertNull(relayFailure.get(),()->String.valueOf(relayFailure.get()));
             assertEquals(called?1:0,jdbc.queryForObject("SELECT attempts FROM questionnaire_jobs WHERE id=?",Integer.class,job));
             assertEquals(called?1:0,jdbc.queryForObject("SELECT count(*) FROM questionnaire_job_attempts WHERE job_id=?",Integer.class,job));

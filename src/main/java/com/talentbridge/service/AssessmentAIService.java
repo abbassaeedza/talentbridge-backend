@@ -79,8 +79,15 @@ public class AssessmentAIService {
     public record QuestionnaireEvaluation(List<MemberMarks> members) {
         public QuestionnaireEvaluation { members = List.copyOf(members); }
     }
+    enum ReplyCheck {
+        NONE, RELAY_ENVELOPE, MODEL_JSON, GENERATION_SHAPE, GENERATION_IDENTITY,
+        GENERATION_TEXT, GENERATION_DUPLICATE, GENERATION_REFERENCES
+    }
     public static final class AssessmentException extends RuntimeException {
-        public AssessmentException(String code) { super(code); }
+        private final ReplyCheck replyCheck;
+        public AssessmentException(String code) { this(code,ReplyCheck.NONE); }
+        AssessmentException(String code,ReplyCheck replyCheck) { super(code); this.replyCheck=replyCheck; }
+        ReplyCheck replyCheck() { return replyCheck; }
     }
     public static final class PreparedGeneration {
         private final OpenAIService.PreparedAssessment request;
@@ -191,27 +198,37 @@ public class AssessmentAIService {
     public GeneratedQuestions generate(PreparedGeneration prepared, Runnable beforeAttempt) {
         require(prepared != null, "INVALID_INPUT");
         JsonNode result = call(prepared.request, beforeAttempt);
-        shape(result, "memberId", "questions");
-        require(prepared.member.equals(id(result.get("memberId"))), "INVALID_RESPONSE");
-        array(result.get("questions"),5);
-        List<Question> questions = new ArrayList<>(); Set<UUID> seen = new HashSet<>();
-        List<String> prompts = new ArrayList<>(prepared.prior);
-        for (JsonNode q : result.get("questions")) {
-            shape(q,"id","prompt","rubric","sourceReferences"); UUID id=id(q.get("id"));
-            require(prepared.ids.contains(id) && seen.add(id), "INVALID_RESPONSE");
-            String prompt=text(q.get("prompt"),20,1500); String rubric=text(q.get("rubric"),1,2000);
-            validPlainText(prompt,20,1500,"INVALID_RESPONSE"); validPlainText(rubric,1,2000,"INVALID_RESPONSE");
-            require(prompts.stream().noneMatch(p -> similar(p,prompt)), "INVALID_RESPONSE"); prompts.add(prompt);
-            JsonNode refs=q.get("sourceReferences"); require(refs.isArray() && refs.size()>=1 && refs.size()<=4,"INVALID_RESPONSE");
-            List<SourceReference> safe=new ArrayList<>();
-            for (JsonNode ref : refs) {
-                shape(ref,"path","startLine","endLine");
-                safe.add(new SourceReference(text(ref.get("path"),1,512), integer(ref.get("startLine"),1,Integer.MAX_VALUE),
-                        integer(ref.get("endLine"),1,Integer.MAX_VALUE)));
+        ReplyCheck check=ReplyCheck.GENERATION_SHAPE;
+        try {
+            shape(result, "memberId", "questions");
+            array(result.get("questions"),5);
+            check=ReplyCheck.GENERATION_IDENTITY;
+            require(prepared.member.equals(id(result.get("memberId"))), "INVALID_RESPONSE");
+            List<Question> questions = new ArrayList<>(); Set<UUID> seen = new HashSet<>();
+            List<String> prompts = new ArrayList<>(prepared.prior);
+            for (JsonNode q : result.get("questions")) {
+                check=ReplyCheck.GENERATION_SHAPE;
+                shape(q,"id","prompt","rubric","sourceReferences");
+                check=ReplyCheck.GENERATION_IDENTITY;
+                UUID id=id(q.get("id"));
+                require(prepared.ids.contains(id) && seen.add(id), "INVALID_RESPONSE");
+                check=ReplyCheck.GENERATION_TEXT;
+                String prompt=text(q.get("prompt"),20,1500); String rubric=text(q.get("rubric"),1,2000);
+                validPlainText(prompt,20,1500,"INVALID_RESPONSE"); validPlainText(rubric,1,2000,"INVALID_RESPONSE");
+                check=ReplyCheck.GENERATION_DUPLICATE;
+                require(prompts.stream().noneMatch(p -> similar(p,prompt)), "INVALID_RESPONSE"); prompts.add(prompt);
+                check=ReplyCheck.GENERATION_REFERENCES;
+                JsonNode refs=q.get("sourceReferences"); require(refs.isArray() && refs.size()>=1 && refs.size()<=4,"INVALID_RESPONSE");
+                List<SourceReference> safe=new ArrayList<>();
+                for (JsonNode ref : refs) {
+                    shape(ref,"path","startLine","endLine");
+                    safe.add(new SourceReference(text(ref.get("path"),1,512), integer(ref.get("startLine"),1,Integer.MAX_VALUE),
+                            integer(ref.get("endLine"),1,Integer.MAX_VALUE)));
+                }
+                validateReferences(prepared.evidence,safe,"INVALID_RESPONSE"); questions.add(new Question(id,prompt,rubric,safe));
             }
-            validateReferences(prepared.evidence,safe,"INVALID_RESPONSE"); questions.add(new Question(id,prompt,rubric,safe));
-        }
-        return new GeneratedQuestions(prepared.member,questions);
+            return new GeneratedQuestions(prepared.member,questions);
+        } catch (AssessmentException failure) { throw new AssessmentException("INVALID_RESPONSE",check); }
     }
 
     public RepositoryEvaluation evaluateRepository(PreparedRepositoryEvaluation prepared) {
@@ -260,7 +277,10 @@ public class AssessmentAIService {
         if (TransactionSynchronizationManager.isActualTransactionActive()) throw new IllegalStateException("Assessment calls require a nontransactional caller");
         quota.reserve(beforeAttempt);
         String response=transport.executeAssessment(request);
-        try { return json.readTree(response); } catch (Exception e) { throw new AssessmentException("INVALID_RESPONSE"); }
+        try { return json.readTree(response); }
+        catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            throw new AssessmentException("INVALID_RESPONSE",ReplyCheck.MODEL_JSON);
+        }
     }
     private ObjectNode input(String brief, GitHubEvidence evidence) {
         validText(brief,1,96000,"INVALID_INPUT");

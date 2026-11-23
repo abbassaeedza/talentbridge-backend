@@ -55,7 +55,7 @@ class AssessmentTransportTest {
             assertEquals(Duration.ofSeconds(85),((HttpRequest)call.getArgument(0)).timeout().orElseThrow()); throw new HttpTimeoutException("SENSITIVE");
         }).when(client).send(any(),any());
         var failure=assertThrows(AssessmentException.class, () -> service.executeAssessment(evaluation));
-        assertEquals("RELAY_FAILURE",failure.getMessage()); assertNull(failure.getCause());
+        assertEquals("RELAY_FAILURE",failure.getMessage()); assertEquals(ReplyCheck.NONE,failure.replyCheck()); assertNull(failure.getCause());
     }
     @Test void explicitlyShorterEvaluationTimeoutIsPreserved() throws Exception {
         ReflectionTestUtils.setField(service,"evaluationTimeoutSeconds",70);
@@ -89,6 +89,7 @@ class AssessmentTransportTest {
             var p=service.prepareAssessment("questionnaire_generation","SENSITIVE-PROMPT","SENSITIVE-ANSWER");
             var failure=assertThrows(AssessmentException.class, () -> service.executeAssessment(p));
             assertNull(failure.getCause()); assertFalse(failure.getMessage().contains(body)); assertTrue(logs.list.isEmpty());
+            assertEquals(ReplyCheck.RELAY_ENVELOPE,failure.replyCheck());
         } finally { logger.detachAppender(logs); logs.stop(); }
     }
     @Test void actualBodyTimerCancelsSubscriptionAndOverflowCancelsBeforeAccumulation() throws Exception {
@@ -128,5 +129,22 @@ class AssessmentTransportTest {
                 assertTimeoutPreemptively(Duration.ofSeconds(3), () -> assertThrows(AssessmentException.class, () -> service.executeAssessment(prepared)));
             }
         } finally { release.countDown(); server.stop(0); executor.shutdownNow(); }
+    }
+    @Test void realSocketOversizedReplyIsDistinctFromNetworkFailure() throws Exception {
+        HttpServer server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/relay", e -> {
+            byte[] body=new byte[262145];
+            try (var out=e.getResponseBody()) { e.sendResponseHeaders(200,body.length); out.write(body); }
+        });
+        server.start();
+        try {
+            ReflectionTestUtils.setField(service,"client",HttpClient.newHttpClient());
+            ReflectionTestUtils.setField(service,"n8nWebhookUrl","http://127.0.0.1:"+server.getAddress().getPort()+"/relay");
+            var prepared=service.prepareAssessment("questionnaire_generation","s","m");
+            var failure=assertThrows(AssessmentException.class, () -> service.executeAssessment(prepared));
+            assertEquals("INVALID_RESPONSE",failure.getMessage());
+            assertEquals(ReplyCheck.RELAY_ENVELOPE,failure.replyCheck());
+            assertNull(failure.getCause());
+        } finally { server.stop(0); }
     }
 }

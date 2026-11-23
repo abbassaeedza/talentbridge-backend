@@ -12,6 +12,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -22,9 +23,11 @@ import java.util.ArrayList;
 import java.util.Locale;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.charset.CharacterCodingException;
 import java.util.concurrent.*;
 import java.util.concurrent.Flow;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import static com.talentbridge.service.AssessmentAIService.*;
 
@@ -100,16 +103,29 @@ public class OpenAIService {
             HttpResponse<byte[]> response = client.send(prepared.request,
                     info -> new AssessmentBody(262144, deadline - System.nanoTime()));
             require(response.statusCode() >= 200 && response.statusCode() < 300, "RELAY_HTTP_FAILURE");
-            String body = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(response.body())).toString();
+            return assessmentMessage(response.body());
+        } catch (AssessmentException e) { throw e; }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssessmentException("RELAY_INTERRUPTED"); }
+        catch (IOException e) {
+            if (e.getCause() instanceof AssessmentException rejected && rejected.replyCheck()==ReplyCheck.RELAY_ENVELOPE)
+                throw rejected;
+            throw new AssessmentException("RELAY_FAILURE");
+        }
+        catch (Exception e) { throw new AssessmentException("RELAY_FAILURE"); }
+    }
+
+    private String assessmentMessage(byte[] bytes) {
+        try {
+            String body = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString();
             JsonNode envelope = mapper.copy().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
                     .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(body);
             require(envelope != null && envelope.isObject() && envelope.size() == 1
                     && envelope.path("message").isTextual(), "INVALID_RESPONSE");
             String content = envelope.get("message").textValue(); validText(content, 1, 131072, "INVALID_RESPONSE");
             return content;
-        } catch (AssessmentException e) { throw e; }
-        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssessmentException("RELAY_INTERRUPTED"); }
-        catch (Exception e) { throw new AssessmentException("RELAY_FAILURE"); }
+        } catch (AssessmentException | CharacterCodingException | JsonProcessingException failure) {
+            throw new AssessmentException("INVALID_RESPONSE",ReplyCheck.RELAY_ENVELOPE);
+        }
     }
 
     private static final class AssessmentBody implements HttpResponse.BodySubscriber<byte[]> {
@@ -131,7 +147,7 @@ public class OpenAIService {
         public synchronized void onNext(List<ByteBuffer> items) {
             if (stopped) return;
             for (ByteBuffer item : items) {
-                if (item.remaining() > limit - received) { onError(new AssessmentException("RESPONSE_TOO_LARGE")); return; }
+                if (item.remaining() > limit - received) { onError(new AssessmentException("INVALID_RESPONSE",ReplyCheck.RELAY_ENVELOPE)); return; }
                 received += item.remaining();
             }
             delegate.onNext(items);
