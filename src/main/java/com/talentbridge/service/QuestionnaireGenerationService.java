@@ -1,5 +1,7 @@
 package com.talentbridge.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.talentbridge.entity.*;
 import com.talentbridge.enums.*;
@@ -14,9 +16,12 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.*;
 import java.util.*;
 import java.util.function.Supplier;
+import java.util.stream.IntStream;
 
 @Service @RequiredArgsConstructor
 public class QuestionnaireGenerationService {
+    private static final String JAVA_WHITESPACE = IntStream.rangeClosed(0,Character.MAX_CODE_POINT)
+            .filter(Character::isWhitespace).collect(StringBuilder::new,StringBuilder::appendCodePoint,StringBuilder::append).toString();
     private final QuestionnaireSnapshotRepository snapshots;
     private final QuestionnaireAssignmentRepository assignments;
     private final QuestionnaireEvidenceRepository evidence;
@@ -272,14 +277,34 @@ public class QuestionnaireGenerationService {
     }
 
     public Review review(UUID submissionId) {
-        return transaction(() -> {
-            var snapshot=snapshots.findBySubmissionIdAndAssessmentVersion(submissionId,2).orElseThrow(QuestionnaireGenerationService::notFound);
-            var members=assignments.findAllBySnapshotId(snapshot.getId()).stream().map(a -> new Member(a.getId(),a.getStudentId(),a.getStudentName(),questionCount(a.getId()),
-                    (int)a.getAnswers().values().stream().filter(s -> !s.isBlank()).count())).toList();
-            var history=jobs.findAllBySnapshotIdOrderByCreatedAtAsc(snapshot.getId()).stream().map(j -> new Job(j.getId(),j.getRetryOf(),j.getKind(),j.getStatus(),j.getAttempts(),
-                    j.getDispatchGeneration(),j.getNextAttemptAt(),j.getLeaseUntil(),j.getLastErrorCode())).toList();
-            return new Review(submissionId,snapshot.getFrozenLabel(),snapshot.getState(),snapshot.getOpensAt(),snapshot.getClosesAt(),clock.instant(),members,history);
-        });
+        return transaction(() -> jdbc.query("""
+                SELECT s.frozen_label, s.state, s.opens_at, s.closes_at,
+                    (SELECT coalesce(jsonb_agg(jsonb_build_object(
+                        'assignmentId', a.id, 'studentId', a.student_id, 'studentName', a.student_name,
+                        'questionCount', (SELECT count(*) FROM questionnaire_questions q WHERE q.assignment_id = a.id),
+                        'answeredCount', (SELECT count(*) FROM jsonb_each_text(a.answers) answer
+                                          WHERE length(translate(answer.value, ?, '')) > 0)
+                    )), '[]') FROM questionnaire_assignments a WHERE a.snapshot_id = s.id) AS members,
+                    (SELECT coalesce(jsonb_agg(jsonb_build_object(
+                        'id', j.id, 'retryOf', j.retry_of, 'kind', j.kind, 'status', j.status,
+                        'attempts', j.attempts, 'dispatchGeneration', j.dispatch_generation,
+                        'nextAttemptAt', j.next_attempt_at, 'leaseUntil', j.lease_until, 'errorCode', j.last_error_code
+                    ) ORDER BY j.created_at), '[]') FROM questionnaire_jobs j WHERE j.snapshot_id = s.id) AS jobs
+                FROM questionnaire_snapshots s
+                WHERE s.submission_id = ? AND s.assessment_version = 2
+                """, rs -> {
+            if (!rs.next()) throw notFound();
+            var opensAt=rs.getObject("opens_at",OffsetDateTime.class);
+            var closesAt=rs.getObject("closes_at",OffsetDateTime.class);
+            try {
+                List<Member> members=json.readValue(rs.getString("members"),new TypeReference<>() {});
+                List<Job> history=json.readValue(rs.getString("jobs"),new TypeReference<>() {});
+                return new Review(submissionId,rs.getString("frozen_label"),QuestionnaireState.valueOf(rs.getString("state")),
+                        opensAt==null?null:opensAt.toInstant(),closesAt==null?null:closesAt.toInstant(),clock.instant(),members,history);
+            } catch (JsonProcessingException failure) {
+                throw new IllegalStateException("Could not read questionnaire review metadata",failure);
+            }
+        },JAVA_WHITESPACE,submissionId));
     }
     public record Review(UUID submissionId,String projectTitle,QuestionnaireState state,Instant opensAt,Instant closesAt,Instant serverNow,List<Member> members,List<Job> jobs) {}
     public record Member(UUID assignmentId,UUID studentId,String studentName,int questionCount,int answeredCount) {}
