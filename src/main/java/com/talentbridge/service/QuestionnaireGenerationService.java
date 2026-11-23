@@ -20,6 +20,8 @@ import java.util.stream.IntStream;
 
 @Service @RequiredArgsConstructor
 public class QuestionnaireGenerationService {
+    private static final int TRANSACTION_TIMEOUT_SECONDS = 2;
+    private static final int RETRY_TRANSACTION_TIMEOUT_SECONDS = 5;
     private static final String JAVA_WHITESPACE = IntStream.rangeClosed(0,Character.MAX_CODE_POINT)
             .filter(Character::isWhitespace).collect(StringBuilder::new,StringBuilder::appendCodePoint,StringBuilder::append).toString();
     private final QuestionnaireSnapshotRepository snapshots;
@@ -37,8 +39,12 @@ public class QuestionnaireGenerationService {
     private final Clock clock;
 
     public void dispatch(UUID id) {
+        dispatch(id,TRANSACTION_TIMEOUT_SECONDS);
+    }
+
+    private void dispatch(UUID id,int timeoutSeconds) {
         nontransactional();
-        Dispatch plan=transaction(() -> {
+        Dispatch plan=transaction(timeoutSeconds, () -> {
             QuestionnaireJob job=lockedJob(id);
             if (terminal(job) || job.getStatus()==QuestionnaireJobStatus.RUNNING) return null;
             return new Dispatch(job.getDispatchGeneration(),job.getNextAttemptAt()==null?clock.instant():job.getNextAttemptAt());
@@ -46,14 +52,14 @@ public class QuestionnaireGenerationService {
         if (plan==null) return;
         try { queue.enqueue(id,plan.generation(),plan.due()); }
         catch (AssessmentTaskQueue.DispatchException failure) {
-            transaction(() -> {
+            transaction(timeoutSeconds, () -> {
                 QuestionnaireJob job=lockedJob(id);
                 if (!terminal(job) && job.getDispatchGeneration()==plan.generation()) job.setLastErrorCode(failure.getMessage());
                 return null;
             });
             throw failure;
         }
-        transaction(() -> {
+        transaction(timeoutSeconds, () -> {
             QuestionnaireJob job=lockedJob(id);
             if (!terminal(job) && job.getDispatchGeneration()==plan.generation()
                     && job.getStatus()!=QuestionnaireJobStatus.RUNNING) {
@@ -248,9 +254,11 @@ public class QuestionnaireGenerationService {
 
     public Review retry(UUID submissionId) {
         nontransactional();
-        UUID next=transaction(() -> {
-            UUID id=snapshots.idBySubmission(submissionId).orElseThrow(QuestionnaireGenerationService::notFound);
-            var snapshot=lockedSnapshot(id);
+        UUID next=transaction(RETRY_TRANSACTION_TIMEOUT_SECONDS, () -> {
+            // Lock the V2 snapshot before Hibernate can hydrate stale state.
+            UUID id=jdbc.query("SELECT id FROM questionnaire_snapshots WHERE submission_id=? AND assessment_version=2 FOR UPDATE",
+                    rs -> { if (!rs.next()) throw notFound(); return rs.getObject(1,UUID.class); },submissionId);
+            var snapshot=snapshots.findById(id).orElseThrow(QuestionnaireGenerationService::notFound);
             if (snapshot.getOpensAt()!=null) return null;
             var history=jobs.findAllBySnapshotIdOrderByCreatedAtAsc(id);
             for (var job : history) if (job.getLeaseUntil()!=null && clock.instant().isBefore(job.getLeaseUntil()))
@@ -258,7 +266,8 @@ public class QuestionnaireGenerationService {
             var active=history.stream().filter(j -> !terminal(j)).findFirst().orElse(null);
             snapshot.setState(QuestionnaireState.GENERATING);
             if (active!=null) {
-                finishAttempt(active,"UNKNOWN","LEASE_EXPIRED"); clearLease(active);
+                if (active.getAttempts()>0) finishAttempt(active,"UNKNOWN","LEASE_EXPIRED");
+                clearLease(active);
                 if (active.getAttempts()>=3) { failed(active,"ATTEMPT_LIMIT"); active=null; }
             }
             if (active==null) {
@@ -272,7 +281,8 @@ public class QuestionnaireGenerationService {
             }
             return active.getId();
         });
-        if (next!=null) try { dispatch(next); } catch (AssessmentTaskQueue.DispatchException failure) { /* Review exposes recoverable dispatch state. */ }
+        if (next!=null) try { dispatch(next,RETRY_TRANSACTION_TIMEOUT_SECONDS); }
+        catch (AssessmentTaskQueue.DispatchException failure) { /* Review exposes recoverable dispatch state. */ }
         return review(submissionId);
     }
 
@@ -311,7 +321,10 @@ public class QuestionnaireGenerationService {
     public record Job(UUID id,UUID retryOf,QuestionnaireJobKind kind,QuestionnaireJobStatus status,int attempts,int dispatchGeneration,Instant nextAttemptAt,Instant leaseUntil,String errorCode) {}
     private record Dispatch(int generation,Instant due) {}
     private <T> T transaction(Supplier<T> operation) {
-        var tx=new TransactionTemplate(manager); tx.setTimeout(2); return tx.execute(status -> operation.get());
+        return transaction(TRANSACTION_TIMEOUT_SECONDS,operation);
+    }
+    private <T> T transaction(int timeoutSeconds,Supplier<T> operation) {
+        var tx=new TransactionTemplate(manager); tx.setTimeout(timeoutSeconds); return tx.execute(status -> operation.get());
     }
     private static ResponseStatusException busy() { return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Generation is busy; retry delivery"); }
     private static ResponseStatusException notFound() { return new ResponseStatusException(HttpStatus.NOT_FOUND,"Questionnaire job not found"); }
