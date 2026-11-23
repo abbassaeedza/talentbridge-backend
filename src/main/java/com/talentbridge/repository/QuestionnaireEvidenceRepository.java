@@ -6,4 +6,5 @@ import java.util.*;
 
 public interface QuestionnaireEvidenceRepository extends JpaRepository<QuestionnaireEvidence, UUID> {
     Optional<QuestionnaireEvidence> findBySnapshotId(UUID snapshotId);
+    boolean existsBySnapshotId(UUID snapshotId);
 }

@@ -23,7 +23,6 @@ public class QuestionnaireSnapshot extends BaseEntity {
     @JdbcTypeCode(SqlTypes.JSON) @Column(columnDefinition = "jsonb", updatable = false)
     @JsonIgnore private JsonNode frozenResolution;
     @JsonIgnore @Column(updatable = false) private UUID frozenLeaderId;
-    @OneToOne(mappedBy = "snapshot", fetch = FetchType.LAZY) @JsonIgnore private QuestionnaireEvidence evidence;
     private Instant opensAt;
     private Instant closesAt;
     @Version private long version;

@@ -68,7 +68,8 @@ public class GitHubEvidenceService {
     }
 
     public GitHubEvidence capture(Resolution frozen, String brief, String token) {
-        return capture(frozen, brief, token, deadline());
+        // Reserve time for the result transaction and successor enqueue before the 115s task deadline.
+        return capture(frozen, brief, token, System.nanoTime() + Duration.ofSeconds(80).toNanos());
     }
 
     public GitHubEvidence capture(String url, String branch, String brief, String token) {
