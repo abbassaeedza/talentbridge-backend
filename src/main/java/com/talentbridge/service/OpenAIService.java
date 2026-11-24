@@ -102,7 +102,11 @@ public class OpenAIService {
         try {
             HttpResponse<byte[]> response = client.send(prepared.request,
                     info -> new AssessmentBody(262144, deadline - System.nanoTime()));
-            require(response.statusCode() >= 200 && response.statusCode() < 300, "RELAY_HTTP_FAILURE");
+            int status = response.statusCode();
+            if (status < 200 || status >= 300) {
+                log.warn("Assessment relay rejected request status={}", status);
+                throw new AssessmentException("RELAY_HTTP_FAILURE");
+            }
             return assessmentMessage(response.body());
         } catch (AssessmentException e) { throw e; }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssessmentException("RELAY_INTERRUPTED"); }
