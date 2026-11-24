@@ -82,7 +82,6 @@ class AssessmentAIServiceTest {
         for (int i = 0; i < 5; i++) {
             var q = questions.addObject(); q.put("id", ids.get(i).toString()); q.put("prompt", prompts.get(i));
             q.put("rubric", "Identify the actual Engine behavior and justify its boundary conditions.");
-            q.putArray("sourceReferenceIds").add(1);
         }
         return root;
     }
@@ -123,7 +122,7 @@ class AssessmentAIServiceTest {
         assertEquals(8192, request.get().path("maxTokens").intValue());
         assertEquals("questionnaire_evaluation", request.get().path("operation").textValue());
     }
-    @Test void onlySourceExcerptsGetIdsAndSelectedIdsResolveToTheirFrozenRanges() throws Exception {
+    @Test void attachesOnlyTheFrozenSourceAssignedToEachQuestionEvenWhenTheModelReordersThem() throws Exception {
         var e=evidence();
         var mixed=new GitHubEvidence(e.resolution(),e.capturedAt(),e.paths(),List.of(
                 new FileEvidence(Kind.README,"README.md","c".repeat(40),"d".repeat(64),12,1,1,1,"Instructions",false),
@@ -132,20 +131,31 @@ class AssessmentAIServiceTest {
                 e.contributors(),e.omissions(),e.bounds());
         var prepared=service.prepareGeneration("Build a safe Engine",mixed,member,ids,List.of());
         var generated=generation();
-        for(var q:generated.path("questions")) ((ObjectNode)q).putArray("sourceReferenceIds").add(2).add(3);
+        var questions=(com.fasterxml.jackson.databind.node.ArrayNode)generated.get("questions");
+        ((ObjectNode)questions.get(1)).put("prompt","What boundary does src/Store.java enforce when it saves a revision?");
+        questions.insert(0,questions.remove(1));
         reply.set(generated.toString());
-        assertEquals(List.of(new SourceReference("src/Engine.java",1,2),new SourceReference("src/Store.java",17,18)),
-                service.generate(prepared).questions().get(0).sourceReferences());
-        var files=mapper.readTree(request.get().path("message").textValue()).path("files");
+        var results=assertDoesNotThrow(()->service.generate(prepared)).questions();
+        assertEquals(ids.get(1),results.get(0).id());
+        assertEquals(List.of(new SourceReference("src/Store.java",17,18)),results.get(0).sourceReferences());
+        assertEquals(List.of(new SourceReference("src/Engine.java",1,2)),results.get(1).sourceReferences());
+        var payload=mapper.readTree(request.get().path("message").textValue());
+        var files=payload.path("files");
         assertFalse(files.get(0).has("sourceReferenceId"));
         assertEquals(2,files.get(1).path("sourceReferenceId").intValue());
         assertEquals(3,files.get(2).path("sourceReferenceId").intValue());
-        assertTrue(request.get().path("system").textValue().contains("sourceReferenceIds"));
-        for(var q:generated.path("questions")) ((ObjectNode)q).putArray("sourceReferenceIds").add(1);
+        assertEquals(2,payload.path("questionSources").path(ids.get(0).toString()).intValue());
+        assertEquals(3,payload.path("questionSources").path(ids.get(1).toString()).intValue());
+        ((ObjectNode)questions.get(0)).put("prompt","What validation does Engine.java apply before saving a new revision?");
         reply.set(generated.toString());
-        assertEquals(ReplyCheck.GENERATION_REFERENCES,assertThrows(AssessmentException.class,()->service.generate(prepared)).replyCheck());
+        assertAll(()->assertFalse(payload.has("questionIds")),
+                ()->assertEquals(ReplyCheck.GENERATION_SOURCE_CONFLICT,assertThrows(AssessmentException.class,()->service.generate(prepared)).replyCheck()));
+        ((ObjectNode)questions.get(0)).put("prompt","What boundary does src/Store.java enforce when it saves a revision?")
+                .put("rubric","Give credit for explaining the validation path in Engine.java.");
+        reply.set(generated.toString());
+        assertEquals(ReplyCheck.GENERATION_SOURCE_CONFLICT,assertThrows(AssessmentException.class,()->service.generate(prepared)).replyCheck());
     }
-    @ParameterizedTest @ValueSource(strings = {"missing", "extra", "duplicate", "near", "reference", "hidden", "duplicateReference", "stringReference", "emptyReferences", "id", "type", "nul", "surrogate", "trailing", "keys", "fence"})
+    @ParameterizedTest @ValueSource(strings = {"missing", "extra", "duplicate", "near", "referenceOverride", "id", "type", "nul", "surrogate", "trailing", "keys", "fence"})
     void rejectsMalformedGenerationInsteadOfPublishing(String mutation) {
         var body = generation(); var qs = (com.fasterxml.jackson.databind.node.ArrayNode) body.get("questions");
         var q = (ObjectNode) qs.get(0);
@@ -154,11 +164,7 @@ class AssessmentAIServiceTest {
             case "extra" -> qs.add(q.deepCopy());
             case "duplicate" -> ((ObjectNode) qs.get(1)).put("prompt", prompts.get(0));
             case "near" -> ((ObjectNode) qs.get(1)).put("prompt", prompts.get(0).toUpperCase() + "!");
-            case "reference" -> q.putArray("sourceReferenceIds").add(3);
-            case "hidden" -> q.putArray("sourceReferenceIds").addObject().put("path", "src/Engine.java").put("startLine",1).put("endLine",3);
-            case "duplicateReference" -> q.putArray("sourceReferenceIds").add(1).add(1);
-            case "stringReference" -> q.putArray("sourceReferenceIds").add("1");
-            case "emptyReferences" -> q.putArray("sourceReferenceIds");
+            case "referenceOverride" -> q.putArray("sourceReferenceIds").add(3);
             case "id" -> q.put("id", UUID.randomUUID().toString());
             case "type" -> q.put("prompt", 17);
             case "nul" -> q.put("rubric", "bad\0value");
@@ -173,9 +179,8 @@ class AssessmentAIServiceTest {
         var error = assertThrows(AssessmentException.class, () -> service.generate(prepared));
         assertEquals("INVALID_RESPONSE", error.getMessage()); assertNull(error.getCause());
         assertEquals(switch (mutation) {
-            case "missing","extra" -> ReplyCheck.GENERATION_SHAPE;
+            case "missing","extra","referenceOverride" -> ReplyCheck.GENERATION_SHAPE;
             case "duplicate","near" -> ReplyCheck.GENERATION_DUPLICATE;
-            case "reference","hidden","duplicateReference","stringReference","emptyReferences" -> ReplyCheck.GENERATION_REFERENCES;
             case "id" -> ReplyCheck.GENERATION_IDENTITY;
             case "type","nul" -> ReplyCheck.GENERATION_TEXT;
             case "surrogate" -> ReplyCheck.RELAY_ENVELOPE;
@@ -345,7 +350,7 @@ class AssessmentAIServiceTest {
         service.prepareGeneration(brief,evidence,single.memberId(),single.questions().stream().map(Answer::id).toList(),List.of());
         assertEquals(63999,input.get().get(0).length()+input.get().get(1).length());
         var base=(ObjectNode)assertDoesNotThrow(()->mapper.readTree(input.get().get(1)));
-        base.remove(List.of("memberId","questionIds","priorPrompts"));
+        base.remove(List.of("memberId","questionSources","priorPrompts"));
         base.path("files").forEach(file -> ((ObjectNode)file).remove("sourceReferenceId"));
         int baseLength=base.toString().length();assertTrue(baseLength<64000);
         String boundedBrief=brief;
