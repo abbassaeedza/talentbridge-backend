@@ -26,10 +26,9 @@ public class AssessmentAIService {
     private static final String GENERATION = POLICY + """
             Return {"memberId":"supplied UUID","questions":[{"id":"supplied question UUID",
             "prompt":"project-specific question, 20..1500 characters","rubric":"private grading criteria, 1..2000 characters"}]}.
-            Write exactly five questions, using each questionSources key as a question ID once.
-            Use that entry's value to find the matching sourceReferenceId in files.
-            Ground the question and rubric in that assigned SOURCE excerpt. Do not include any citation fields in your reply.
-            Avoid naming another source file unless the question also names the assigned source file.
+            Use all five questionSources keys as question IDs. Match each value to sourceReferenceId in files.
+            Base each question and rubric on that SOURCE excerpt. Return no citation fields.
+            If naming another source file, also name the assigned one.
             Ask about actual implementation choices/behavior against the approved brief, not generic programming knowledge.
             Questions must be distinct from each other and all prior teammate prompts, including close paraphrases.
             """;
@@ -244,7 +243,8 @@ public class AssessmentAIService {
                 require(prompts.stream().noneMatch(p -> similar(p,prompt)), "INVALID_RESPONSE"); prompts.add(prompt);
                 check=ReplyCheck.GENERATION_SOURCE_CONFLICT;
                 var citation=prepared.citations.get(id);
-                require(agreesWithSource(prompt,citation.path(),prepared.sourceAliases),"INVALID_RESPONSE");
+                require(agreesWithSource(prompt,citation.path(),prepared.sourceAliases)
+                        && agreesWithSource(rubric,citation.path(),prepared.sourceAliases),"INVALID_RESPONSE");
                 questions.add(new Question(id,prompt,rubric,List.of(citation)));
             }
             return new GeneratedQuestions(prepared.member,questions);

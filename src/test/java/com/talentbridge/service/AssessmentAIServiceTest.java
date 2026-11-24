@@ -149,7 +149,11 @@ class AssessmentAIServiceTest {
         ((ObjectNode)questions.get(0)).put("prompt","What validation does Engine.java apply before saving a new revision?");
         reply.set(generated.toString());
         assertAll(()->assertFalse(payload.has("questionIds")),
-                ()->assertEquals("GENERATION_SOURCE_CONFLICT",assertThrows(AssessmentException.class,()->service.generate(prepared)).replyCheck().name()));
+                ()->assertEquals(ReplyCheck.GENERATION_SOURCE_CONFLICT,assertThrows(AssessmentException.class,()->service.generate(prepared)).replyCheck()));
+        ((ObjectNode)questions.get(0)).put("prompt","What boundary does src/Store.java enforce when it saves a revision?")
+                .put("rubric","Give credit for explaining the validation path in Engine.java.");
+        reply.set(generated.toString());
+        assertEquals(ReplyCheck.GENERATION_SOURCE_CONFLICT,assertThrows(AssessmentException.class,()->service.generate(prepared)).replyCheck());
     }
     @ParameterizedTest @ValueSource(strings = {"missing", "extra", "duplicate", "near", "referenceOverride", "id", "type", "nul", "surrogate", "trailing", "keys", "fence"})
     void rejectsMalformedGenerationInsteadOfPublishing(String mutation) {
