@@ -92,6 +92,30 @@ class AssessmentTransportTest {
             assertEquals(ReplyCheck.RELAY_ENVELOPE,failure.replyCheck());
         } finally { logger.detachAppender(logs); logs.stop(); }
     }
+    @Test void logsOnlyTheHttpStatusOfAnAssessmentRelayFailure() throws Exception {
+        HttpServer server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/relay", exchange -> {
+            byte[] body="SENSITIVE-RELAY-BODY".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            try (var out=exchange.getResponseBody()) {
+                exchange.sendResponseHeaders(502,body.length);
+                out.write(body);
+            }
+        });
+        var logger=(ch.qos.logback.classic.Logger)org.slf4j.LoggerFactory.getLogger(OpenAIService.class);
+        var logs=new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        logs.start(); logger.addAppender(logs); server.start();
+        try {
+            ReflectionTestUtils.setField(service,"client",HttpClient.newHttpClient());
+            ReflectionTestUtils.setField(service,"n8nWebhookUrl","http://127.0.0.1:"+server.getAddress().getPort()+"/relay");
+            var prepared=service.prepareAssessment("questionnaire_generation","SENSITIVE-PROMPT","SENSITIVE-ANSWER");
+            var failure=assertThrows(AssessmentException.class,()->service.executeAssessment(prepared));
+            assertEquals("RELAY_HTTP_FAILURE",failure.getMessage());
+            assertNull(failure.getCause());
+            assertEquals(List.of("Assessment relay rejected request status=502"),
+                    logs.list.stream().map(event->event.getFormattedMessage()).toList());
+            assertNull(logs.list.get(0).getThrowableProxy());
+        } finally { server.stop(0); logger.detachAppender(logs); logs.stop(); }
+    }
     @Test void actualBodyTimerCancelsSubscriptionAndOverflowCancelsBeforeAccumulation() throws Exception {
         ReflectionTestUtils.setField(service,"generationTimeoutSeconds",1);
         @SuppressWarnings("unchecked") HttpResponse.ResponseInfo info=mock(HttpResponse.ResponseInfo.class);
