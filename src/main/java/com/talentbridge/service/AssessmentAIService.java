@@ -7,11 +7,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.regex.Pattern;
 import static com.talentbridge.service.GitHubEvidence.*;
 
 /** Private assessment contracts, not shared reports or final grades. */
 @Service
 public class AssessmentAIService {
+    private static final Pattern FILE_TOKEN=Pattern.compile("[\\p{L}\\p{N}_./-]*[\\p{L}\\p{N}_-]");
     private static final Set<String> CATEGORIES = Set.of("authenticity", "quality", "functionality", "scope", "collaboration");
     private static final String POLICY = """
             You assess a frozen student project using only the captured implementation evidence.
@@ -23,11 +25,11 @@ public class AssessmentAIService {
             """;
     private static final String GENERATION = POLICY + """
             Return {"memberId":"supplied UUID","questions":[{"id":"supplied question UUID",
-            "prompt":"project-specific question, 20..1500 characters","rubric":"private grading criteria, 1..2000 characters",
-            "sourceReferenceIds":[1]}]}.
-            Exactly five questions, using every supplied questionId once, each grounded in 1..4 distinct source excerpts.
-            Copy the integer sourceReferenceId values printed on the relevant SOURCE files into sourceReferenceIds.
-            The number 1 is only an example. Do not count files or invent IDs, paths or line numbers.
+            "prompt":"project-specific question, 20..1500 characters","rubric":"private grading criteria, 1..2000 characters"}]}.
+            Write exactly five questions, using each questionSources key as a question ID once.
+            Use that entry's value to find the matching sourceReferenceId in files.
+            Ground the question and rubric in that assigned SOURCE excerpt. Do not include any citation fields in your reply.
+            Avoid naming another source file unless the question also names the assigned source file.
             Ask about actual implementation choices/behavior against the approved brief, not generic programming knowledge.
             Questions must be distinct from each other and all prior teammate prompts, including close paraphrases.
             """;
@@ -82,7 +84,7 @@ public class AssessmentAIService {
     }
     enum ReplyCheck {
         NONE, RELAY_ENVELOPE, MODEL_JSON, GENERATION_SHAPE, GENERATION_IDENTITY,
-        GENERATION_TEXT, GENERATION_DUPLICATE, GENERATION_REFERENCES
+        GENERATION_TEXT, GENERATION_DUPLICATE, GENERATION_SOURCE_CONFLICT
     }
     public static final class AssessmentException extends RuntimeException {
         private final ReplyCheck replyCheck;
@@ -92,12 +94,14 @@ public class AssessmentAIService {
     }
     public static final class PreparedGeneration {
         private final OpenAIService.PreparedAssessment request;
-        private final GitHubEvidence evidence;
         private final UUID member;
-        private final Set<UUID> ids;
+        private final Map<UUID,SourceReference> citations;
+        private final Set<String> sourceAliases;
         private final List<String> prior;
-        private PreparedGeneration(OpenAIService.PreparedAssessment request, GitHubEvidence evidence, UUID member, Set<UUID> ids, List<String> prior) {
-            this.request=request; this.evidence=evidence; this.member=member; this.ids=Set.copyOf(ids); this.prior=List.copyOf(prior);
+        private PreparedGeneration(OpenAIService.PreparedAssessment request, UUID member, Map<UUID,SourceReference> citations,
+                                   Set<String> sourceAliases, List<String> prior) {
+            this.request=request; this.member=member; this.citations=Map.copyOf(citations);
+            this.sourceAliases=Set.copyOf(sourceAliases); this.prior=List.copyOf(prior);
         }
     }
     public static final class PreparedRepositoryEvaluation {
@@ -119,13 +123,29 @@ public class AssessmentAIService {
         priorPrompts.forEach(p -> validPlainText(p, 20, 1500, "INVALID_INPUT"));
         ObjectNode data = input(approvedBrief, evidence);
         var files=data.path("files");
+        List<Integer> sourceIndexes=new ArrayList<>();
+        Set<String> sourceAliases=new HashSet<>();
         for (int i=0;i<evidence.files().size();i++) {
-            if (evidence.files().get(i).kind()==Kind.SOURCE) ((ObjectNode)files.get(i)).put("sourceReferenceId",i+1);
+            var file=evidence.files().get(i);
+            if (file.kind()==Kind.SOURCE) {
+                sourceIndexes.add(i);
+                sourceAliases.add(file.path()); sourceAliases.add(fileName(file.path()));
+                ((ObjectNode)files.get(i)).put("sourceReferenceId",i+1);
+            }
         }
-        data.put("memberId", memberId.toString()); data.set("questionIds", json.valueToTree(questionIds));
+        var questionSources=data.putObject("questionSources");
+        Map<UUID,SourceReference> citations=new HashMap<>();
+        for (int i=0;i<questionIds.size();i++) {
+            UUID id=questionIds.get(i);
+            int source=sourceIndexes.get((priorPrompts.size()+i)%sourceIndexes.size());
+            var file=evidence.files().get(source);
+            citations.put(id,new SourceReference(file.path(),file.startLine(),file.endLine()));
+            questionSources.put(id.toString(),source+1);
+        }
+        data.put("memberId", memberId.toString());
         data.set("priorPrompts", json.valueToTree(priorPrompts));
         return new PreparedGeneration(transport.prepareAssessment("questionnaire_generation", GENERATION, data.toString()),
-                evidence, memberId, new HashSet<>(questionIds), priorPrompts);
+                memberId, citations, sourceAliases, priorPrompts);
     }
 
     public PreparedRepositoryEvaluation prepareRepositoryEvaluation(String approvedBrief, GitHubEvidence evidence) {
@@ -213,24 +233,19 @@ public class AssessmentAIService {
             List<String> prompts = new ArrayList<>(prepared.prior);
             for (JsonNode q : result.get("questions")) {
                 check=ReplyCheck.GENERATION_SHAPE;
-                shape(q,"id","prompt","rubric","sourceReferenceIds");
+                shape(q,"id","prompt","rubric");
                 check=ReplyCheck.GENERATION_IDENTITY;
                 UUID id=id(q.get("id"));
-                require(prepared.ids.contains(id) && seen.add(id), "INVALID_RESPONSE");
+                require(prepared.citations.containsKey(id) && seen.add(id), "INVALID_RESPONSE");
                 check=ReplyCheck.GENERATION_TEXT;
                 String prompt=text(q.get("prompt"),20,1500); String rubric=text(q.get("rubric"),1,2000);
                 validPlainText(prompt,20,1500,"INVALID_RESPONSE"); validPlainText(rubric,1,2000,"INVALID_RESPONSE");
                 check=ReplyCheck.GENERATION_DUPLICATE;
                 require(prompts.stream().noneMatch(p -> similar(p,prompt)), "INVALID_RESPONSE"); prompts.add(prompt);
-                check=ReplyCheck.GENERATION_REFERENCES;
-                JsonNode refs=q.get("sourceReferenceIds"); require(refs.isArray() && refs.size()>=1 && refs.size()<=4,"INVALID_RESPONSE");
-                List<SourceReference> safe=new ArrayList<>();
-                for (JsonNode ref : refs) {
-                    var file=prepared.evidence.files().get(integer(ref,1,prepared.evidence.files().size())-1);
-                    require(file.kind()==Kind.SOURCE,"INVALID_RESPONSE");
-                    safe.add(new SourceReference(file.path(),file.startLine(),file.endLine()));
-                }
-                validateReferences(prepared.evidence,safe,"INVALID_RESPONSE"); questions.add(new Question(id,prompt,rubric,safe));
+                check=ReplyCheck.GENERATION_SOURCE_CONFLICT;
+                var citation=prepared.citations.get(id);
+                require(agreesWithSource(prompt,citation.path(),prepared.sourceAliases),"INVALID_RESPONSE");
+                questions.add(new Question(id,prompt,rubric,List.of(citation)));
             }
             return new GeneratedQuestions(prepared.member,questions);
         } catch (AssessmentException failure) { throw new AssessmentException("INVALID_RESPONSE",check); }
@@ -338,6 +353,19 @@ public class AssessmentAIService {
         for (String field:fields) require(node.hasNonNull(field),"INVALID_RESPONSE");
     }
     private static void array(JsonNode node,int count) { require(node!=null && node.isArray() && node.size()==count,"INVALID_RESPONSE"); }
+    private static String fileName(String path) { return path.substring(path.lastIndexOf('/')+1); }
+    private static boolean agreesWithSource(String prompt,String assigned,Set<String> aliases) {
+        String name=fileName(assigned);
+        boolean other=false;
+        var tokens=FILE_TOKEN.matcher(prompt);
+        while(tokens.find()) {
+            String token=tokens.group();
+            if(token.startsWith("./")) token=token.substring(2);
+            if(token.equals(assigned) || token.equals(name)) return true;
+            other |= aliases.contains(token);
+        }
+        return !other;
+    }
     private static boolean similar(String a,String b) {
         String left=a.toLowerCase(Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]+"," ").strip();
         String right=b.toLowerCase(Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]+"," ").strip();

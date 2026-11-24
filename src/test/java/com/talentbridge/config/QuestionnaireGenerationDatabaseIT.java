@@ -743,7 +743,7 @@ class QuestionnaireGenerationDatabaseIT {
             "invalidModelJson,MODEL,INVALID_RESPONSE,MODEL_JSON",
             "invalidModelReply,MODEL,INVALID_RESPONSE,GENERATION_SHAPE",
             "invalidIdentity,MODEL,INVALID_RESPONSE,GENERATION_IDENTITY",
-            "invalidReference,MODEL,INVALID_RESPONSE,GENERATION_REFERENCES",
+            "referenceOverride,MODEL,INVALID_RESPONSE,GENERATION_SHAPE",
             "resultWriteFailure,RESULT_WRITE,UNCLASSIFIED,NONE"
     })
     void generationFailuresIdentifySafePhaseWithoutLoggingPayload(String mode,String phase,String category,String validation) throws Exception {
@@ -1110,10 +1110,9 @@ class QuestionnaireGenerationDatabaseIT {
                         "Which boundary values test publication deadlines and why?");
                 for(int i=0;i<5;i++) {
                     var q=questions.addObject();q.put("id",ids.get(i).toString());q.put("prompt",prompts.get(i));q.put("rubric","Explain the actual Engine boundary.");
-                    q.putArray("sourceReferenceIds").add(1);
                 }
                 if(mode.equals("invalidIdentity")) root.put("memberId","00000000-0000-4000-8000-000000000000");
-                if(mode.equals("invalidReference")) ((com.fasterxml.jackson.databind.node.ObjectNode)questions.get(0))
+                if(mode.equals("referenceOverride")) ((com.fasterxml.jackson.databind.node.ObjectNode)questions.get(0))
                         .putArray("sourceReferenceIds").add(5000);
                 reply.set(mode.equals("invalidModelJson")?"SYNTHETIC_PRIVATE_RELAY_SENTINEL":root.toString());
                 return real.prepareGeneration(c.getArgument(0),c.getArgument(1),member,ids,c.getArgument(4));
@@ -1144,7 +1143,7 @@ class QuestionnaireGenerationDatabaseIT {
         int used(){return jdbc.queryForObject("SELECT attempt_count FROM assessment_ai_quota WHERE id=1",Integer.class);}
         void assertAccounting(UUID job) {
             boolean called=Set.of("success","providerFailure","invalidRelayEnvelope","invalidModelJson","invalidModelReply",
-                    "invalidIdentity","invalidReference","resultWriteFailure").contains(mode);
+                    "invalidIdentity","referenceOverride","resultWriteFailure").contains(mode);
             assertEquals(called?1:0,calls.get());assertNull(relayFailure.get(),()->String.valueOf(relayFailure.get()));
             assertEquals(called?1:0,jdbc.queryForObject("SELECT attempts FROM questionnaire_jobs WHERE id=?",Integer.class,job));
             assertEquals(called?1:0,jdbc.queryForObject("SELECT count(*) FROM questionnaire_job_attempts WHERE job_id=?",Integer.class,job));
